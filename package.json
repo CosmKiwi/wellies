@@ -1,0 +1,35 @@
+{
+  "name": "wellies",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "ingest": "uv run --project packages/ingest packages/ingest/src/sync.py",
+    "web": "bun x vite apps/web"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "esbuild": "^0.28.0",
+    "rollup": "^4.60.1",
+    "typescript": "^5.0.0",
+    "vite-plugin-top-level-await": "^1.6.0",
+    "vite-plugin-wasm": "^3.6.0"
+  },
+  "dependencies": {
+    "@deck.gl/core": "^9.2.11",
+    "@deck.gl/layers": "^9.2.11",
+    "@geoarrow/deck.gl-layers": "^0.3.1",
+    "@geoarrow/geoparquet-wasm": "^0.2.0-beta.5",
+    "@loaders.gl/core": "^4.4.1",
+    "@loaders.gl/parquet": "^4.4.1",
+    "apache-arrow": "^21.1.0",
+    "eventemitter3": "^5.0.4",
+    "maplibre-gl": "^5.22.0",
+    "umbrellajs": "^3.3.3",
+    "vite": "^8.0.3",
+    "zstd-codec": "^0.1.5"
+  }
+}

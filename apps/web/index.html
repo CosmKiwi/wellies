@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>Wellies | Audit</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://unpkg.com/maplibre-gl@^4.0.0/dist/maplibre-gl.css" rel="stylesheet" />
+    <style>
+        body {
+            margin: 0;
+            background: #020617;
+            overflow: hidden;
+        }
+
+        #map {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 0;
+        }
+
+        #deck-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="map"></div>
+
+    <canvas id="deck-canvas"></canvas>
+
+    <div
+        class="absolute top-6 left-6 z-[10] w-80 p-6 bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-2xl shadow-2xl pointer-events-none">
+        <h1 class="text-3xl font-black italic tracking-tighter text-blue-500 uppercase">Wellies</h1>
+        <div id="audit-stat"
+            class="mt-4 p-3 bg-black/40 rounded-xl border border-white/5 text-sm font-mono text-slate-300">
+            Initializing GPU...
+        </div>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+</body>
+
+</html>
