@@ -32,7 +32,7 @@ const binsToPath = (bins: number[], maxVal: number, startIndex: number = 0, endI
 };
 
 // --- COLOR LOGIC ---
-const getAssetColor = (d: any, mode: string) => {
+const getAssetColor = (d: any, mode: string): [number, number, number, number] => {
     if (mode === 'material') {
         const mat = (d.material || '').toUpperCase();
         if (mat.includes('AC')) return [239, 68, 68, 200];      // Red: Asbestos (Critical)
@@ -115,8 +115,8 @@ async function init() {
                 endYear = actualMax;
                 minFilter = startYear;
                 maxFilter = endYear;
-                u("#year-min").attr({ min: startYear, max: endYear, value: startYear });
-                u("#year-max").attr({ min: startYear, max: endYear, value: endYear });
+                u("#year-min").attr({ min: String(startYear), max: String(endYear), value: String(startYear) });
+                u("#year-max").attr({ min: String(startYear), max: String(endYear), value: String(endYear) });
                 refresh();
             }
         }),
