@@ -1,6 +1,6 @@
 import u from "umbrellajs";
 import { Deck } from "@deck.gl/core";
-import { PathLayer, IconLayer } from "@deck.gl/layers";
+import { PathLayer, ScatterplotLayer } from "@deck.gl/layers"; // Swapped IconLayer for ScatterplotLayer
 import { ParquetLoader } from "@loaders.gl/parquet";
 import { registerLoaders } from "@loaders.gl/core";
 import { DataFilterExtension } from "@deck.gl/extensions";
@@ -63,7 +63,8 @@ async function init() {
     let minFilter = startYear;
     let maxFilter = endYear;
     let showUnknown = true;
-    let colorMode = 'default'; // State for colorization
+    let showLeaks = true;
+    let colorMode = 'default';
 
     let deck: any = null;
     let globalBins: number[] = [];
@@ -82,7 +83,7 @@ async function init() {
             id: "water-pipes-in-use",
             data: "/data/water_pipes_in_use.parquet",
             getPath: (d: any) => unwrap(d.coords),
-            getColor: (d: any) => getAssetColor(d, colorMode), // Dynamic Color
+            getColor: (d: any) => getAssetColor(d, colorMode),
             widthMinPixels: 2,
             pickable: true,
             autoHighlight: true,
@@ -97,7 +98,7 @@ async function init() {
                 [showUnknown ? 0 : 1, 1]
             ],
             updateTriggers: {
-                getColor: [colorMode], // Trigger repaint when mode changes
+                getColor: [colorMode],
                 getFilterValue: [maxFilter],
                 filterRange: [minFilter, maxFilter, showUnknown]
             },
@@ -120,16 +121,44 @@ async function init() {
                 refresh();
             }
         }),
-        new IconLayer({
+        new ScatterplotLayer({
             id: "active-leaks",
             data: "/data/active_leaks.parquet",
+            visible: showLeaks,
             getPosition: (d: any) => unwrap(d.coords),
-            iconAtlas: 'https://raw.githubusercontent.com/visgl/deck.gl-data/master/website/icon-atlas.png',
-            iconMapping: { marker: { x: 0, y: 0, width: 128, height: 128, anchorY: 128, mask: true } },
-            getIcon: () => 'marker',
-            getSize: 30,
-            getColor: [255, 50, 50],
-            pickable: true
+
+            // --- DYNAMIC COLORING BY PRIORITY ---
+            getFillColor: (d: any) => {
+                const priority = (d.priority || '').toLowerCase();
+                if (priority === 'urgent') return [255, 0, 0, 255];
+                if (priority === 'high') return [255, 120, 0, 255];
+                if (priority === 'medium') return [255, 200, 0, 220];
+                if (priority === 'low') return [100, 116, 139, 150]; // Muted grey-blue
+                return [255, 255, 255, 100]; // Fallback white
+            },
+
+            // --- PROPORTIONAL SCALING ---
+            // radiusUnits: 'meters' makes them occupy real-world space
+            radiusUnits: 'meters',
+            getRadius: 25,
+
+            // This is the "Magic": they scale but never get too small to click 
+            // or too big to obscure the street.
+            radiusMinPixels: 2.5,
+            radiusMaxPixels: 10,
+
+            stroked: false,
+            getLineColor: [255, 255, 255, 180],
+            getLineWidth: 1,
+            lineWidthMinPixels: 1,
+
+            pickable: true,
+            autoHighlight: true,
+            highlightColor: [255, 255, 255, 255],
+
+            updateTriggers: {
+                visible: [showLeaks] // Force Deck.gl to check this variable
+            }
         })
     ];
 
@@ -190,6 +219,8 @@ async function init() {
             getTooltip: (info) => {
                 if (!info.object || !info.layer) return null;
                 const d = info.object;
+
+                // --- Tooltip for Pipes ---
                 if (info.layer.id === 'water-pipes-in-use') {
                     return {
                         html: `
@@ -200,11 +231,28 @@ async function init() {
                                     <span style="color: #94a3b8;">Material:</span> <span>${d.material}</span>
                                     <span style="color: #94a3b8;">Diameter:</span> <span>${d.diameter_mm}mm</span>
                                     <span style="color: #94a3b8;">Install:</span>  <span>${d.install_year || 'Unknown'}</span>
-                                    <span style="color: #94a3b8;">Condition:</span><span>${d.condition_grade}</span>
                                 </div>
                             </div>
                         `,
                         style: { backgroundColor: 'rgba(15, 23, 42, 0.95)', color: '#fff', borderRadius: '8px', border: '1px solid #334155' }
+                    };
+                }
+
+                // --- Tooltip for Leaks ---
+                if (info.layer.id === 'active-leaks') {
+                    return {
+                        html: `
+                            <div style="font-family: monospace; padding: 10px; line-height: 1.4;">
+                                <b style="color: #f87171; font-size: 1.1em;">ACTIVE LEAK</b>
+                                <hr style="border:0; border-top:1px solid #334155; margin:5px 0;"/>
+                                <div style="display: flex; flex-direction: column; gap: 4px;">
+                                    <span>${d.address || 'Unknown Address'}</span>
+                                    <span style="color: #94a3b8; font-size: 0.9em;">Status: ${d.status || 'Reported'}</span>
+                                    <span style="color: #94a3b8; font-size: 0.9em;">Reported: ${d.date_reported || 'N/A'}</span>
+                                </div>
+                            </div>
+                        `,
+                        style: { backgroundColor: 'rgba(15, 23, 42, 0.95)', color: '#fff', borderRadius: '8px', border: '2px solid #ef4444' }
                     };
                 }
                 return null;
@@ -215,7 +263,6 @@ async function init() {
             layers: getLayers()
         });
 
-        // --- UI EVENT LISTENERS ---
         u("#color-mode").on("change", (e: any) => {
             colorMode = e.target.value;
             refresh();
@@ -238,6 +285,11 @@ async function init() {
 
         u("#toggle-unknown").on("change", (e: any) => {
             showUnknown = e.target.checked;
+            refresh();
+        });
+
+        u("#toggle-leaks").on("change", (e: any) => {
+            showLeaks = e.target.checked;
             refresh();
         });
 

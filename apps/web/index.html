@@ -107,6 +107,16 @@
                 <option value="material">Material Class</option>
             </select>
         </div>
+
+        <div class="mt-4 flex items-center justify-between">
+            <span class="text-xs font-bold uppercase tracking-widest text-slate-400">Include Leaks</span>
+            <label class="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" id="toggle-leaks" checked class="sr-only peer">
+                <div
+                    class="w-11 h-6 bg-slate-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:bg-blue-600 after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all">
+                </div>
+            </label>
+        </div>
     </div>
 
     <script type="module" src="./main.ts"></script>
