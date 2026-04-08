@@ -4,6 +4,8 @@ import json
 import urllib.request
 import time
 from pathlib import Path
+import geopandas as gpd
+from shapely.geometry import LineString, Point
 
 # Setup paths relative to script location
 ROOT_DIR = Path(__file__).parent.parent.parent.parent
@@ -47,7 +49,6 @@ def process_to_parquet(name, data, layer_type):
     all_rows = []
     in_use_rows = []
     
-    # Updated Production Schema
     PRODUCTION_COLUMNS = [
         "asset_id", "system_type", "pipe_use", "pipe_type", "diameter_mm", 
         "material", "condition_grade", "length_m", "criticality", 
@@ -55,7 +56,6 @@ def process_to_parquet(name, data, layer_type):
         "maintenance", "owner", "pipe_class", "uid", "globalid"
     ]
     
-    # Mapping for Joint Types and Protection (Examples based on your aggregate)
     PRETTY_NAMES = {
         "joint_type": {"RRJ": "Rubber Ring", "FLG": "Flanged", "BW": "Butt Weld", "EFSW": "Electrofusion"},
         "external_protection": {"CTE": "Coal Tar Enamel", "PE": "Polyethylene", "BITU": "Bitumen"},
@@ -63,60 +63,74 @@ def process_to_parquet(name, data, layer_type):
     }
 
     def get_year(ts):
-        # Use 'is not None' to allow 0 (the epoch itself)
-        if ts is None or not isinstance(ts, (int, float)): 
-            return None
-            
+        if ts is None or not isinstance(ts, (int, float)): return None
         try:
-            # Define the Unix Epoch start point
             epoch = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
-            
-            # Add the milliseconds as a duration (timedelta)
-            # This works perfectly for negative numbers on all Operating Systems
             dt = epoch + datetime.timedelta(milliseconds=ts)
-            
             return dt.year
-        except (OverflowError, ValueError):
-            return None
+        except (OverflowError, ValueError): return None
 
     for f in data["features"]:
         attrs = f["attributes"]
-        geom = f["geometry"]
+        geom_raw = f.get("geometry")
+        if not geom_raw: continue
         
-        # Base row
-        row = {k: str(v) if v is not None else "" for k, v in attrs.items()}
-        row["coords"] = geom["paths"][0] if layer_type == "line" else [float(geom["x"]), float(geom["y"])]
-        all_rows.append(row)
-        
-        if name == "water_pipes" and attrs.get("operational_status") == "In Use":
-            p_row = {k: str(attrs.get(k, "")) for k in PRODUCTION_COLUMNS}
-            
-            # 1. Clean up numeric/length fields
-            try: p_row["length_m"] = f"{float(attrs.get('length_m', 0)):.1f}"
-            except: p_row["length_m"] = "0"
+        # Ensure coords are strictly a list of floats (no strings allowed)
+        if layer_type == "line":
+            # Flatten to a clean list of [float, float]
+            coords = [[float(coord[0]), float(coord[1])] for coord in geom_raw["paths"][0]]
+        else:
+            coords = [float(geom_raw["x"]), float(geom_raw["y"])]
 
-            # 2. Convert Timestamps to Years (Integers)
+        # --- EXPORT 1: LEAKS (Generic) ---
+        # Don't convert everything to string; keep native types for the dataframe
+        row = {k: v for k, v in attrs.items()}
+        row["coords"] = coords 
+        
+        # We don't strictly need lon/lat if we use coords, but keeping for compatibility
+        if layer_type == "point":
+            row["lon"] = coords[0]
+            row["lat"] = coords[1]
+            
+        all_rows.append(row)
+
+        # --- EXPORT 2: PRODUCTION PIPES ---
+        if name == "water_pipes" and attrs.get("operational_status") == "In Use":
+            p_row = {k: attrs.get(k, "") for k in PRODUCTION_COLUMNS}
+            p_row["coords"] = coords 
+            
+            raw_len = attrs.get('length_m')
+            p_row["length_m"] = float(raw_len) if raw_len is not None else 0.0
+            
             p_row["install_year"] = get_year(attrs.get("date_installed"))
             p_row["lined_year"] = get_year(attrs.get("date_lined"))
             p_row["protection_year"] = get_year(attrs.get("external_protection_date"))
 
-            # 3. Apply Pretty Names (using your aggregate codes)
             for field, mapping in PRETTY_NAMES.items():
                 val = attrs.get(field, "")
                 if val in mapping: p_row[field] = mapping[val]
-
-            p_row["coords"] = row["coords"]
+            
             in_use_rows.append(p_row)
 
-    pd.DataFrame(all_rows).to_parquet(DATA_DIR / f"{name}.parquet", index=False)
-    if in_use_rows:
-        df_prod = pd.DataFrame(in_use_rows)
-        # Convert year columns to nullable ints for cleaner Parquet storage
-        for yr in ["install_year", "lined_year", "protection_year"]:
-            df_prod[yr] = pd.to_numeric(df_prod[yr], errors='coerce').astype('Int64')
+    # EXPORT 1 Logic
+    if all_rows and name == "active_leaks":
+        df_all = pd.DataFrame(all_rows)
+        # Drop the redundant geometry column if ArcGIS provided it as an attribute
+        if 'geometry' in df_all.columns:
+            df_all = df_all.drop(columns=['geometry'])
             
-        df_prod.to_parquet(DATA_DIR / f"{name}_in_use.parquet", index=False)
-        print(f"⚡ Saved Production: {name}_in_use.parquet ({len(df_prod):,} rows)")
+        df_all.to_parquet(DATA_DIR / f"{name}.parquet", index=False, engine='pyarrow')
+        print(f"✅ Saved Leaks: {name}.parquet ({len(df_all)} rows)")
+
+    # EXPORT 2 Logic
+    if in_use_rows and name == "water_pipes":
+        df_prod = pd.DataFrame(in_use_rows)
+        for yr in ["install_year", "lined_year", "protection_year"]:
+            df_prod[yr] = pd.to_numeric(df_prod[yr], errors='coerce').fillna(0).astype('int16')
+        
+        df_prod["length_m"] = df_prod["length_m"].astype('float32')
+        df_prod.to_parquet(DATA_DIR / f"{name}_in_use.parquet", index=False, engine='pyarrow')
+        print(f"⚡ Saved Production Pipes: {name}_in_use.parquet ({len(df_prod):,} rows)")
 
 if __name__ == "__main__":
     for layer in LAYERS:

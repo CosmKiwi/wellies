@@ -3,19 +3,9 @@ import { Deck } from "@deck.gl/core";
 import { PathLayer, ScatterplotLayer } from "@deck.gl/layers";
 import { ParquetLoader } from "@loaders.gl/parquet";
 import { DataFilterExtension } from "@deck.gl/extensions";
-import { ZstdCodec } from 'zstd-codec';
 import maplibregl from 'maplibre-gl';
+import { ZstdCodec } from 'zstd-codec';
 import 'maplibre-gl/dist/maplibre-gl.css';
-
-// --- UTILS ---
-const unwrap = (obj: any): any => {
-    if (!obj) return null;
-    if (Array.isArray(obj)) return obj.map(val => (typeof val === 'string' && !isNaN(parseFloat(val))) ? parseFloat(val) : unwrap(val));
-    if (obj.list && Array.isArray(obj.list)) {
-        return obj.list.map((i: any) => i.element.list ? unwrap(i.element) : (typeof i.element === 'string' ? parseFloat(i.element) : i.element));
-    }
-    return obj;
-};
 
 const binsToPath = (bins: number[], maxVal: number, startIndex: number = 0, endIndex: number = bins.length - 1) => {
     if (maxVal === 0 || bins.length === 0) return "M 0 100 L 100 100 Z";
@@ -38,7 +28,10 @@ const UTILITY_CONFIG: Record<string, { file: string, color: [number, number, num
 
 const LOAD_OPTIONS = {
     modules: { 'zstd-codec': ZstdCodec },
-    worker: true
+    worker: true,
+    gis: {
+        reproject: false
+    }
 };
 
 const getAssetColor = (d: any, mode: string, utility: string): [number, number, number, number] => {
@@ -152,7 +145,19 @@ async function init() {
                 loadOptions: LOAD_OPTIONS,
                 onError: () => true,
 
-                getPath: (d: any) => unwrap(d.coords),
+                getPath: (d: any) => {
+                    if (d.coords?.list) {
+                        return d.coords.list.map((p: any) => {
+                            const pair = p.element?.list;
+                            if (pair) {
+                                return [Number(pair[0].element), Number(pair[1].element)];
+                            }
+                            return [0, 0];
+                        });
+                    }
+                    return d.coords || [];
+                },
+
                 getColor: (d: any) => getAssetColor(d, colorMode, key),
                 widthMinPixels: 2,
                 pickable: true,
@@ -196,29 +201,52 @@ async function init() {
             }));
         });
 
+        let hasLoggedLeak = false;
+
         layers.push(new ScatterplotLayer({
             id: "active-leaks",
             data: "/data/active_leaks.parquet",
             loaders: [ParquetLoader],
-            loadOptions: LOAD_OPTIONS,
-            onError: () => true,
+            loadOptions: {
+                parquet: { shape: 'object-row-table' },
+                worker: true
+            },
+            onDataLoad: (data: any) => {
+                console.log("Leak Data Sample:", data[0]);
+            },
             visible: showLeaks && activeUtilities.has('drinking'),
-            getPosition: (d: any) => unwrap(d.coords),
+
+            // getPosition: (d: any) => d.coords,
+            getPosition: (d: any) => {
+                if (d.coords?.list && d.coords.list.length >= 2) {
+                    return [
+                        Number(d.coords.list[0].element),
+                        Number(d.coords.list[1].element)
+                    ];
+                }
+                // Fallback if sync.py is fixed and it's already a clean array
+                return Array.isArray(d.coords) ? d.coords : [0, 0];
+            },
+
             getFillColor: (d: any) => {
                 const p = (d.priority || '').toLowerCase();
-                if (p === 'urgent') return [255, 0, 0, 255];
-                if (p === 'high') return [255, 120, 0, 255];
-                if (p === 'medium') return [255, 200, 0, 220];
-                return [100, 116, 139, 150];
+                if (p === 'urgent') return [220, 38, 38, 255]; // Red
+                if (p === 'high') return [249, 115, 22, 255];   // Orange
+                if (p === 'medium') return [234, 179, 8, 220];  // Yellow
+                return [100, 116, 139, 150];                    // Slate
             },
             radiusUnits: 'meters',
             getRadius: 25,
-            radiusMinPixels: 2.5,
-            radiusMaxPixels: 10,
-            stroked: false,
+            radiusMinPixels: 3,
+            stroked: true,
+            getLineColor: [255, 255, 255, 200],
+            lineWidthMinPixels: 1,
             pickable: true,
             autoHighlight: true,
-            updateTriggers: { visible: [showLeaks, activeUtilities.has('drinking')] }
+
+            updateTriggers: {
+                visible: [showLeaks, activeUtilities.has('drinking')]
+            }
         }));
 
         return layers;

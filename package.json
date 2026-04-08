@@ -14,7 +14,7 @@
     "@types/bun": "latest",
     "esbuild": "^0.28.0",
     "rollup": "^4.60.1",
-    "typescript": "^5.0.0",
+    "typescript": "^5.9.3",
     "vite-plugin-top-level-await": "^1.6.0",
     "vite-plugin-wasm": "^3.6.0"
   },
@@ -26,11 +26,13 @@
     "@geoarrow/geoparquet-wasm": "^0.2.0-beta.5",
     "@loaders.gl/core": "^4.4.1",
     "@loaders.gl/parquet": "^4.4.1",
+    "@loaders.gl/wkt": "^4.4.1",
     "apache-arrow": "^21.1.0",
     "eventemitter3": "^5.0.4",
     "maplibre-gl": "^5.22.0",
+    "snappyjs": "^0.7.0",
     "umbrellajs": "^3.3.3",
-    "vite": "^8.0.3",
+    "vite": "^8.0.7",
     "zstd-codec": "^0.1.5"
   }
 }
