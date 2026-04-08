@@ -1,5 +1,5 @@
 import u from "umbrellajs";
-import { Deck } from "@deck.gl/core";
+import { Deck, Position } from "@deck.gl/core";
 import { PathLayer, ScatterplotLayer } from "@deck.gl/layers";
 import { ParquetLoader } from "@loaders.gl/parquet";
 import { DataFilterExtension } from "@deck.gl/extensions";
@@ -7,6 +7,7 @@ import maplibregl from 'maplibre-gl';
 import { ZstdCodec } from 'zstd-codec';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
+// --- UTILS ---
 const binsToPath = (bins: number[], maxVal: number, startIndex: number = 0, endIndex: number = bins.length - 1) => {
     if (maxVal === 0 || bins.length === 0) return "M 0 100 L 100 100 Z";
     const points = bins.map((km, i) => {
@@ -29,9 +30,7 @@ const UTILITY_CONFIG: Record<string, { file: string, color: [number, number, num
 const LOAD_OPTIONS = {
     modules: { 'zstd-codec': ZstdCodec },
     worker: true,
-    gis: {
-        reproject: false
-    }
+    parquet: {}
 };
 
 const getAssetColor = (d: any, mode: string, utility: string): [number, number, number, number] => {
@@ -71,8 +70,6 @@ async function init() {
     let deck: any = null;
     let globalBins: number[] = [];
     let globalMax = 0;
-
-    // Key fix: Use a map to store data per utility so we don't have to re-fetch
     const dataCache: Record<string, any[]> = {};
 
     const map = new maplibregl.Map({
@@ -87,21 +84,16 @@ async function init() {
         const currentActive = Array.from(activeUtilities)[0];
         const data = dataCache[currentActive];
 
-        if (!data || data.length === 0) {
-            u("#audit-stat").html(`<div class="text-slate-500 text-xs italic">Loading ${currentActive}...</div>`);
-            return;
-        }
+        if (!data || data.length === 0) return;
 
         let totalMeters = 0;
         let visibleCount = 0;
-
-        // Reset and build bins based on total range
-        globalBins = new Array(Math.max(1, endYear - startYear + 1)).fill(0);
+        globalBins = new Array(endYear - startYear + 1).fill(0);
 
         for (let i = 0; i < data.length; i++) {
             const d = data[i];
             const yr = Number(d.install_year) || 0;
-            const length = parseFloat(d.length_m) || 0;
+            const length = Number(d.length_m) || 0;
 
             if (yr >= startYear && yr <= endYear) {
                 globalBins[yr - startYear] += length;
@@ -115,15 +107,12 @@ async function init() {
         }
 
         globalMax = Math.max(...globalBins);
-
-        // Update SVG paths for Age Profile
         u("#hist-bg").attr("d", binsToPath(globalBins, globalMax));
         const sIdx = Math.max(0, minFilter - startYear);
         const eIdx = Math.min(globalBins.length - 1, maxFilter - startYear);
         u("#hist-fg").attr("d", binsToPath(globalBins, globalMax, sIdx, eIdx));
 
-        // Update Text Stats
-        const km = (totalMeters / 1000).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+        const km = (totalMeters / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 });
         u("#audit-stat").html(`
             <div class="flex justify-between items-center font-mono">
                 <span class="text-slate-400 text-xs">${visibleCount.toLocaleString()} assets</span>
@@ -143,16 +132,22 @@ async function init() {
                 visible: isVisible,
                 loaders: [ParquetLoader],
                 loadOptions: LOAD_OPTIONS,
-                onError: () => true,
+
+                onError: (error) => {
+                    if (error.message.includes('magic=<!DO') || error.message.includes('404')) {
+                        console.warn(`⚠️ Utility "${key}" data not found. Skipping layer.`);
+                    } else {
+                        console.error(`💥 Unexpected error on "${key}":`, error);
+                    }
+                    return true; // Prevents the error from bubbling up further
+                },
 
                 getPath: (d: any) => {
+                    // Handle experimental Arrow clumping for Path data
                     if (d.coords?.list) {
                         return d.coords.list.map((p: any) => {
                             const pair = p.element?.list;
-                            if (pair) {
-                                return [Number(pair[0].element), Number(pair[1].element)];
-                            }
-                            return [0, 0];
+                            return pair ? [Number(pair[0].element), Number(pair[1].element)] : [0, 0];
                         });
                     }
                     return d.coords || [];
@@ -162,7 +157,6 @@ async function init() {
                 widthMinPixels: 2,
                 pickable: true,
                 autoHighlight: true,
-                highlightColor: [255, 255, 255, 100],
                 extensions: [new DataFilterExtension({ filterSize: 2 })],
                 getFilterValue: (d: any) => {
                     const yr = Number(d.install_year) || 0;
@@ -172,78 +166,48 @@ async function init() {
                 updateTriggers: {
                     visible: [isVisible],
                     getColor: [colorMode, isVisible],
-                    getFilterValue: [maxFilter],
                     filterRange: [minFilter, maxFilter, showUnknown]
                 },
                 onDataLoad: (data: any) => {
-                    dataCache[key] = data; // Cache data globally
-
-                    if (key === 'drinking' && data.length > 0) {
-                        let actualMin = 2026;
-                        let actualMax = 0;
-                        for (let i = 0; i < data.length; i++) {
-                            const yr = Number(data[i].install_year) || 0;
-                            if (yr > 0) {
-                                if (yr < actualMin) actualMin = yr;
-                                if (yr > actualMax) actualMax = yr;
-                            }
-                        }
-                        startYear = actualMin;
-                        endYear = actualMax;
-                        u("#year-min").attr({ min: String(startYear), max: String(endYear) });
-                        u("#year-max").attr({ min: String(startYear), max: String(endYear) });
-                    }
-
-                    if (activeUtilities.has(key)) {
-                        calculateStats();
-                    }
+                    dataCache[key] = data;
+                    if (activeUtilities.has(key)) calculateStats();
                 }
             }));
         });
-
-        let hasLoggedLeak = false;
 
         layers.push(new ScatterplotLayer({
             id: "active-leaks",
             data: "/data/active_leaks.parquet",
             loaders: [ParquetLoader],
-            loadOptions: {
-                parquet: { shape: 'object-row-table' },
-                worker: true
-            },
-            onDataLoad: (data: any) => {
-                console.log("Leak Data Sample:", data[0]);
-            },
+            loadOptions: LOAD_OPTIONS,
             visible: showLeaks && activeUtilities.has('drinking'),
 
-            // getPosition: (d: any) => d.coords,
-            getPosition: (d: any) => {
-                if (d.coords?.list && d.coords.list.length >= 2) {
+            getPosition: (d: any): Position => {
+                const c = d.coords;
+                if (c?.list && c.list.length >= 2) {
                     return [
-                        Number(d.coords.list[0].element),
-                        Number(d.coords.list[1].element)
-                    ];
+                        Number(c.list[0].element),
+                        Number(c.list[1].element)
+                    ] as unknown as Position;
                 }
-                // Fallback if sync.py is fixed and it's already a clean array
-                return Array.isArray(d.coords) ? d.coords : [0, 0];
+                return (Array.isArray(c) && c.length >= 2 ? c : [0, 0]) as unknown as Position;
             },
 
             getFillColor: (d: any) => {
                 const p = (d.priority || '').toLowerCase();
-                if (p === 'urgent') return [220, 38, 38, 255]; // Red
-                if (p === 'high') return [249, 115, 22, 255];   // Orange
-                if (p === 'medium') return [234, 179, 8, 220];  // Yellow
-                return [100, 116, 139, 150];                    // Slate
+                if (p === 'urgent') return [220, 38, 38, 255];
+                if (p === 'high') return [249, 115, 22, 255];
+                if (p === 'medium') return [234, 179, 8, 220];
+                return [100, 116, 139, 150];
             },
             radiusUnits: 'meters',
             getRadius: 25,
-            radiusMinPixels: 3,
+            radiusMinPixels: 4,
             stroked: true,
             getLineColor: [255, 255, 255, 200],
             lineWidthMinPixels: 1,
             pickable: true,
             autoHighlight: true,
-
             updateTriggers: {
                 visible: [showLeaks, activeUtilities.has('drinking')]
             }
@@ -254,43 +218,22 @@ async function init() {
 
     const refresh = () => {
         u("#year-label").text(`${minFilter} - ${maxFilter}`);
-        if (!deck) return;
-        deck.setProps({ layers: getLayers() });
-        calculateStats(); // Update UI whenever sliders or colors change
-    };
-
-    const switchTab = (id: string) => {
-        activeUtilities.clear();
-        activeUtilities.add(id);
-
-        u(".utility-tab")
-            .removeClass("bg-blue-600 text-white shadow-lg")
-            .addClass("text-slate-400 hover:text-slate-200 rounded-lg");
-
-        u(`#tab-${id}`)
-            .addClass("bg-blue-600 text-white shadow-lg")
-            .removeClass("text-slate-400 hover:text-slate-200");
-
-        // UI Reset
-        u("#hist-bg").attr("d", "");
-        u("#hist-fg").attr("d", "");
-
-        refresh();
+        if (deck) deck.setProps({ layers: getLayers() });
+        calculateStats();
     };
 
     try {
         deck = new Deck({
             canvas: 'deck-canvas',
-            width: '100%', height: '100%',
             initialViewState: { longitude: 174.7762, latitude: -41.2865, zoom: 11 },
             controller: true,
-            getTooltip: (info) => {
-                if (!info.object || !info.layer || !info.layer.props.visible) return null;
-                const d = info.object;
-                const isLeak = info.layer.id === 'active-leaks';
+            getTooltip: ({ object, layer }) => {
+                if (!object || !layer?.props.visible) return null;
+                const isLeak = layer.id === 'active-leaks';
                 return {
-                    html: isLeak ? `<div style="font-family: monospace; padding: 10px;"><b style="color: #f87171;">ACTIVE LEAK</b><hr style="border-top:1px solid #334155; margin:5px 0;"/>${d.address}</div>`
-                        : `<div style="font-family: monospace; padding: 10px;"><b style="color: #0cf;">${d.asset_id}</b><hr style="border-top:1px solid #334155; margin:5px 0;"/>${d.material} | ${d.diameter_mm}mm</div>`,
+                    html: isLeak
+                        ? `<div class="p-2 font-mono"><b class="text-red-400">ACTIVE LEAK</b><hr class="my-1 opacity-20"/>${object.wsadd_formattedaddress || 'Unknown Address'}</div>`
+                        : `<div class="p-2 font-mono"><b class="text-blue-400">${object.asset_id}</b><hr class="my-1 opacity-20"/>${object.material} | ${object.diameter_mm}mm</div>`,
                     style: { backgroundColor: 'rgba(15, 23, 42, 0.95)', color: '#fff', borderRadius: '8px' }
                 };
             },
@@ -305,7 +248,16 @@ async function init() {
             layers: getLayers()
         });
 
-        u(".utility-tab").on("click", (e: any) => switchTab(e.target.id.replace('tab-', '')));
+        // --- UI BINDINGS ---
+        u(".utility-tab").on("click", (e: any) => {
+            const id = e.target.id.replace('tab-', '');
+            activeUtilities.clear();
+            activeUtilities.add(id);
+            u(".utility-tab").removeClass("bg-blue-600 text-white").addClass("text-slate-400");
+            u(`#tab-${id}`).addClass("bg-blue-600 text-white").removeClass("text-slate-400");
+            refresh();
+        });
+
         u("#color-mode").on("change", (e: any) => { colorMode = e.target.value; refresh(); });
         u("#year-min").on("input", (e: any) => { minFilter = parseInt(e.target.value); refresh(); });
         u("#year-max").on("input", (e: any) => { maxFilter = parseInt(e.target.value); refresh(); });
