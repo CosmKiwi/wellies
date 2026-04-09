@@ -1,5 +1,5 @@
 import u from "umbrellajs";
-import { Deck, Position } from "@deck.gl/core";
+import { Deck, Position, FlyToInterpolator } from "@deck.gl/core";
 import { PathLayer, ScatterplotLayer } from "@deck.gl/layers";
 import { ParquetLoader } from "@loaders.gl/parquet";
 import { DataFilterExtension } from "@deck.gl/extensions";
@@ -21,7 +21,7 @@ const binsToPath = (bins: number[], maxVal: number, startIndex: number = 0, endI
 };
 
 const UTILITY_CONFIG: Record<string, { file: string, color: [number, number, number], label: string }> = {
-    drinking: { file: 'water_pipes_in_use.parquet', color: [0, 150, 255], label: 'Drinking' },
+    drinking: { file: 'drinking_water_pipes.parquet', color: [0, 150, 255], label: 'Drinking' },
     waste: { file: 'waste_water_pipes.parquet', color: [168, 85, 247], label: 'Waste' },
     storm: { file: 'storm_water_pipes.parquet', color: [34, 197, 94], label: 'Storm' }
 };
@@ -322,6 +322,40 @@ async function init() {
             lastUtilityId = "";
 
             refresh();
+        });
+
+        u("#zoom-location").on("click", () => {
+            if (!navigator.geolocation) {
+                alert("Geolocation is not supported by your browser");
+                return;
+            }
+
+            // Indicate loading state
+            u("#zoom-location").addClass("animate-pulse text-blue-500");
+
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                    u("#zoom-location").removeClass("animate-pulse text-blue-500");
+
+                    // Forensic FlyTo: zoom in close enough to see individual pipes
+                    deck.setProps({
+                        initialViewState: {
+                            ...deck.props.initialViewState,
+                            longitude: pos.coords.longitude,
+                            latitude: pos.coords.latitude,
+                            zoom: 17, // Deep zoom for asset audit
+                            transitionDuration: 2000,
+                            transitionInterpolator: new FlyToInterpolator()
+                        }
+                    });
+                },
+                (err) => {
+                    u("#zoom-location").removeClass("animate-pulse text-blue-500");
+                    console.error("GPS Error:", err);
+                    alert("Unable to find your location. Check your GPS settings.");
+                },
+                { enableHighAccuracy: true }
+            );
         });
 
         u("#color-mode").on("change", (e: any) => { colorMode = e.target.value; refresh(); });

@@ -1,0 +1,10 @@
+name: "drinking_water_pipes"
+url: "https://gis.wellingtonwater.co.nz/server1/rest/services/Councils/Regional_Water_Pipes/MapServer/0/query"
+type: "line"
+production_filter: "operational_status = 'In Use'"
+output_file: "drinking_water_pipes.parquet"
+columns:
+  - asset_id
+  - material
+  - diameter_mm
+  - date_installed
