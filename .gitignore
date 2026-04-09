@@ -44,3 +44,11 @@ __marimo__/
 .venv/
 __pycache__/
 *.pyc
+
+# Plombery Orchestrator
+plombery.db
+plombery.db-journal
+.data/
+
+# Data Cache
+.cache_db/
