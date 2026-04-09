@@ -251,8 +251,8 @@ async function init() {
 
     const refresh = () => {
         if (isTicking) return;
-
         isTicking = true;
+
         window.requestAnimationFrame(() => {
             u("#year-label").text(`${minFilter} - ${maxFilter}`);
 
@@ -347,19 +347,29 @@ async function init() {
             refresh();
         });
 
-        u("#toggle-ui").on("click", () => {
+        // Define the toggle action
+        const toggleAction = () => {
             const body = u("#panel-body");
             const isHidden = body.hasClass("hidden");
+            const isMobile = window.innerWidth < 640;
 
-            // Toggle visibility
             body.toggleClass("hidden");
 
-            // Rotate the arrow
-            // If it was hidden, we are expanding (arrow up: 0deg)
-            // If it was visible, we are collapsing (arrow down: 180deg)
+            // Handle arrow rotation
             const rotation = isHidden ? "rotate(0deg)" : "rotate(180deg)";
             u("#arrow").attr("style", `transform: ${rotation}`);
-        });
+
+            // Forensic Map Resize (Critical for mobile layout shifts)
+            if (isMobile) {
+                // Delay slightly to allow the CSS transition to finish 
+                // before re-calculating map size
+                setTimeout(() => map.resize(), 300);
+            }
+        };
+
+        // Bind to both triggers
+        u("#toggle-ui").on("click", toggleAction);
+        u("#mobile-handle").on("click", toggleAction);
 
         // Helper to bring the active slider to the front
         const bringToFront = (selector: string) => {
