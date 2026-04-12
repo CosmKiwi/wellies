@@ -6,7 +6,20 @@ import topLevelAwait from "vite-plugin-top-level-await";
 export default defineConfig({
     plugins: [
         wasm(),
-        topLevelAwait()
+        topLevelAwait(),
+        {
+            name: 'brotli-header-injector',
+            configureServer(server) {
+                server.middlewares.use((req, res, next) => {
+                    if (req.url?.endsWith('.arrow.br')) {
+                        res.setHeader('Content-Encoding', 'br');
+                        res.setHeader('Content-Type', 'application/vnd.apache.arrow.stream');
+                        req.url = req.url;
+                    }
+                    next();
+                });
+            }
+        }
     ],
     resolve: {
         alias: {

@@ -1,0 +1,13 @@
+name: "active_leaks"
+url: "https://services7.arcgis.com/2ECs938g489DMWjt/ArcGIS/rest/services/Job_Status_Public_View/FeatureServer/5/query"
+type: "point"
+output_file: "active_leaks.parquet"
+columns:
+  - wonum
+  - status
+  - reportdate
+  - wsadd_formataddress
+  - type
+  - comm_description
+  - priority
+  - water_type

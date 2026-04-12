@@ -4,6 +4,8 @@ import json
 import datetime
 from pathlib import Path
 import diskcache
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 cache = diskcache.Cache(Path(__file__).parent / ".cache_db")
 
@@ -70,10 +72,13 @@ def run_sync(config, logger):
         geom = f.get("geometry")
         if not geom: continue
 
-        # Standardize Coords
+        # --- OPTIMIZATION 1: FLAT COORDINATES ---
         if config.get('type') == "line":
-            # Ensure this is a raw Python list of lists
-            coords = [[float(c[0]), float(c[1])] for c in geom["paths"][0]]
+            # Flatten to a single 1D list: [lon1, lat1, lon2, lat2, ...]
+            # This completely eliminates the deep nesting in loaders.gl
+            coords = []
+            for pt in geom["paths"][0]:
+                coords.extend([float(pt[0]), float(pt[1])])
         else:
             coords = [float(geom["x"]), float(geom["y"])]
 
@@ -82,16 +87,29 @@ def run_sync(config, logger):
         row["coords"] = coords
         
         ts = attrs.get("date_installed")
-        row["install_year"] = get_year_from_ts(ts)
-        # Use a safe get for length/diameter
+        # Default missing years to 0 here to avoid NaN handling in JS
+        row["install_year"] = get_year_from_ts(ts) or 0 
+        
         row["length_m"] = float(attrs.get("length_m") or attrs.get("SHAPE_Length") or 0.0)
 
         all_rows.append(row)
 
+    # --- OPTIMIZATION 2: DOWNCASTING MEMORY ---
     df = pd.DataFrame(all_rows)
     
+    # Force float32 (deck.gl only uses 32-bit floats anyway) and lower-bit integers
+    df['length_m'] = df['length_m'].astype('float32')
+    df['install_year'] = df['install_year'].astype('int32')
+
     output_path = DATA_DIR / config['output_file']
-    df.to_parquet(output_path, index=False, engine='pyarrow', compression='snappy')
+    
+    # --- OPTIMIZATION 3: ZSTD COMPRESSION ---
+    df.to_parquet(
+        output_path, 
+        index=False, 
+        engine='pyarrow', 
+        compression='zstd' 
+    )
     
     logger.info(f"✅ Saved {len(df)} rows to {output_path}")
     return len(df)
