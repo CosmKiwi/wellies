@@ -344,7 +344,7 @@ async function init() {
         // 1. BOOT THE MAP IMMEDIATELY
         deck = new Deck({
             canvas: 'deck-canvas',
-            useDevicePixels: false,
+            useDevicePixels: true,
             initialViewState: { longitude: 174.7762, latitude: -41.2865, zoom: 11 },
             controller: true,
 

@@ -21,7 +21,8 @@
             top: 0;
             left: 0;
             width: 100vw;
-            height: 100vh;
+            /* 🛠️ FIX 1: Use dvh (Dynamic Viewport Height) instead of vh */
+            height: 100dvh;
         }
 
         #map {
@@ -32,17 +33,13 @@
             z-index: 1;
         }
 
-        /* 🆕 Hide Scrollbar Globally for a Sleek UI */
         .hide-scroll {
             -ms-overflow-style: none;
-            /* IE and Edge */
             scrollbar-width: none;
-            /* Firefox */
         }
 
         .hide-scroll::-webkit-scrollbar {
             display: none;
-            /* Chrome, Safari and Opera */
         }
 
         /* Main Panel Base (Desktop) */
@@ -50,7 +47,8 @@
             position: absolute;
             z-index: 10;
             width: 320px;
-            max-height: calc(100vh - 48px);
+            /* 🛠️ FIX 2: Use dvh here too */
+            max-height: calc(100dvh - 48px);
             transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
 
@@ -72,10 +70,13 @@
                 border: none !important;
                 border-top: 1px solid rgba(255, 255, 255, 0.1) !important;
                 padding-bottom: calc(24px + env(safe-area-inset-bottom)) !important;
+                /* 🛠️ FIX 3: Cap the total panel height so it never pushes off the screen */
+                max-height: 85dvh !important;
             }
 
             #panel-body {
-                max-height: calc(100vh - 140px);
+                /* 🛠️ FIX 4: Ensure the inner body scrolls before hitting the cap */
+                max-height: calc(85dvh - 120px);
             }
 
             .utility-tab {
@@ -85,7 +86,6 @@
             }
         }
 
-        /* UI Details */
         #year-min {
             z-index: 3;
         }
@@ -352,7 +352,7 @@
     </div>
 
     <button id="zoom-location"
-        class="fixed bottom-8 right-6 z-[20] p-4 bg-slate-900/80 backdrop-blur-xl border border-slate-800 rounded-full shadow-2xl text-blue-400 hover:text-white transition-all cursor-pointer active:scale-95 sm:bottom-12">
+        class="fixed top-6 right-6 sm:top-auto sm:bottom-12 sm:right-6 z-[20] p-4 bg-slate-900/80 backdrop-blur-xl border border-slate-800 rounded-full shadow-2xl text-blue-400 hover:text-white transition-all cursor-pointer active:scale-95">
         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
             stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3" />
