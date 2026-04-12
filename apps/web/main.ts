@@ -1,14 +1,13 @@
 import u from "umbrellajs";
-import { Deck, Position, FlyToInterpolator } from "@deck.gl/core";
+import { Deck, FlyToInterpolator } from "@deck.gl/core";
 import { PathLayer, ScatterplotLayer } from "@deck.gl/layers";
-import { ParquetLoader } from "@loaders.gl/parquet";
 import { DataFilterExtension } from "@deck.gl/extensions";
 import maplibregl from 'maplibre-gl';
-import { ZstdCodec } from 'zstd-codec';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
-// --- OPTIMIZATION 1: CONSTANT COLORS ---
-// Prevents generating new arrays on every render tick
+// 🚀 THE MAGIC IMPORT: Natively parses Arrow IPC streams
+import { tableFromIPC } from 'apache-arrow';
+
 const COLORS: Record<string, [number, number, number, number]> = {
     RED: [239, 68, 68, 200],
     PURPLE: [168, 85, 247, 200],
@@ -21,7 +20,25 @@ const COLORS: Record<string, [number, number, number, number]> = {
     UNKNOWN: [71, 85, 105, 150]
 };
 
-// --- UTILS ---
+const getMaterialCategory = (mat: string | null) => {
+    const m = (mat || '').toUpperCase();
+
+    // Asbestos Cement (AC, AC-E, AC-F, Ac)
+    if (m.startsWith('AC')) return 'AC';
+
+    // Iron (CI, CIBL, CICL, DI, DICL, DIEP)
+    if (m.includes('CI') || m.includes('DI') || m.includes('IRON')) return 'CI';
+
+    // Steel & Galvanized (ST, STEEL, CORR ST, GS, GI)
+    if (m.includes('ST') || m === 'GS' || m === 'GI') return 'STEEL';
+
+    // Plastics (PE, PE80, PE100, HDPE, LDPE, PVC, MPVC, UPVC)
+    if (m.includes('PE') || m.includes('PVC')) return 'PE';
+
+    // Everything Else (ABS, BRASS, BUTYL, CU, EW, CONC, RCON, BRICK, AL, PITF, PP)
+    return 'OTHER';
+};
+
 const binsToPath = (bins: number[], maxVal: number, startIndex: number = 0, endIndex: number = bins.length - 1) => {
     if (maxVal === 0 || bins.length === 0) return "M 0 100 L 100 100 Z";
     const points = bins.map((km, i) => {
@@ -34,16 +51,11 @@ const binsToPath = (bins: number[], maxVal: number, startIndex: number = 0, endI
     return `M 0 100 L ${points.join(' ')} L 100 100 Z`;
 };
 
+// 🎯 Point to the pre-compressed Arrow files
 const UTILITY_CONFIG: Record<string, { file: string, color: [number, number, number], label: string }> = {
-    drinking: { file: 'drinking_water_pipes.parquet', color: [0, 150, 255], label: 'Drinking' },
-    waste: { file: 'waste_water_pipes.parquet', color: [168, 85, 247], label: 'Waste' },
-    storm: { file: 'storm_water_pipes.parquet', color: [34, 197, 94], label: 'Storm' }
-};
-
-const LOAD_OPTIONS = {
-    modules: { 'zstd-codec': ZstdCodec },
-    worker: true,
-    parquet: {}
+    drinking: { file: 'drinking_water_pipes.arrow.br', color: [0, 150, 255], label: 'Drinking' },
+    waste: { file: 'waste_water_pipes.arrow.br', color: [168, 85, 247], label: 'Waste' },
+    storm: { file: 'storm_water_pipes.arrow.br', color: [34, 197, 94], label: 'Storm' }
 };
 
 const populateColor = (target: number[], source: [number, number, number, number?]): [number, number, number, number] => {
@@ -51,21 +63,20 @@ const populateColor = (target: number[], source: [number, number, number, number
     target[1] = source[1];
     target[2] = source[2];
     target[3] = source[3] ?? 255;
-    // Tell TS to trust us: this is exactly 4 numbers now
     return target as unknown as [number, number, number, number];
 };
 
-const getAssetColor = (d: any, mode: string, utility: string, target: number[]): [number, number, number, number] => {
+const getAssetColor = (row: any, mode: string, utility: string, target: number[]): [number, number, number, number] => {
     if (mode === 'material') {
-        const mat = (d.material || '').toUpperCase();
-        if (mat.includes('AC')) return populateColor(target, COLORS.RED);
-        if (mat.includes('CI') || mat.includes('IRON')) return populateColor(target, COLORS.PURPLE);
-        if (mat.includes('ST') || mat.includes('STEEL')) return populateColor(target, COLORS.YELLOW);
-        if (mat.includes('PE') || mat.includes('PVC') || mat.includes('UPVC')) return populateColor(target, COLORS.BLUE);
+        const cat = getMaterialCategory(row.material);
+        if (cat === 'AC') return populateColor(target, COLORS.RED);
+        if (cat === 'CI') return populateColor(target, COLORS.PURPLE);
+        if (cat === 'STEEL') return populateColor(target, COLORS.YELLOW);
+        if (cat === 'PE') return populateColor(target, COLORS.BLUE);
         return populateColor(target, COLORS.GRAY);
     }
     if (mode === 'age') {
-        const yr = Number(d.install_year) || 0;
+        const yr = Number(row.install_year) || 0;
         if (yr === 0) return populateColor(target, COLORS.UNKNOWN);
         const age = 2026 - yr;
         if (age > 70) return populateColor(target, COLORS.DARK_RED);
@@ -77,118 +88,11 @@ const getAssetColor = (d: any, mode: string, utility: string, target: number[]):
     return populateColor(target, [baseColor[0], baseColor[1], baseColor[2], 200]);
 };
 
-const extractFlatCoords = (coords: any): number[] => {
-    if (!coords) return [];
-    if (Array.isArray(coords)) return coords;
-
-    if (coords.list) {
-        const flat: number[] = [];
-        for (let i = 0; i < coords.list.length; i++) {
-            const el = coords.list[i].element;
-            if (el && typeof el === 'object' && el.list) {
-                flat.push(Number(el.list[0]?.element || 0));
-                flat.push(Number(el.list[1]?.element || 0));
-            } else {
-                flat.push(Number(el || 0));
-            }
-        }
-        return flat;
-    }
-    return [];
-};
-
-const extractPairs = (coords: any): [number, number][] => {
-    const flat = extractFlatCoords(coords);
-    const pairs: [number, number][] = [];
-    for (let j = 0; j < flat.length; j += 2) {
-        pairs.push([flat[j] || 0, flat[j + 1] || 0]);
-    }
-    return pairs;
-};
-
-function processPipesToBinary(rawData: any[]) {
-    const numPaths = rawData.length;
-    let totalVertices = 0;
-
-    const flatPaths: number[][] = new Array(numPaths);
-    for (let i = 0; i < numPaths; i++) {
-        const flat = extractFlatCoords(rawData[i].coords);
-        flatPaths[i] = flat;
-        totalVertices += flat.length / 2;
-    }
-
-    const positions = new Float32Array(totalVertices * 3);
-    const pathIndices = new Uint32Array(numPaths + 1);
-
-    let vertexOffset = 0;
-    for (let i = 0; i < numPaths; i++) {
-        pathIndices[i] = vertexOffset;
-        const coords = flatPaths[i];
-        const numPoints = coords.length / 2;
-
-        for (let j = 0; j < numPoints; j++) {
-            positions[(vertexOffset + j) * 3] = coords[j * 2];         // X
-            positions[(vertexOffset + j) * 3 + 1] = coords[j * 2 + 1]; // Y
-            positions[(vertexOffset + j) * 3 + 2] = 0;                 // Z
-        }
-        vertexOffset += numPoints;
-    }
-    pathIndices[numPaths] = vertexOffset;
-
-    // 🕵️ PIPES FORENSIC LOG
-    if (numPaths > 0) {
-        console.group("🚧 Pipes Binary Debug");
-        console.log("Total Paths (length):", numPaths);
-        console.log("Positions Array:", positions instanceof Float32Array ? `Float32Array(${positions.length})` : "FAILED");
-        console.log("Start Indices Array:", pathIndices instanceof Uint32Array ? `Uint32Array(${pathIndices.length})` : "FAILED");
-
-        console.log("First Start Index:", pathIndices[0], "| Second Start Index:", pathIndices[1]);
-
-        if (positions.length >= 6) {
-            console.log("First Vertex:", [positions[0], positions[1], positions[2]]);
-            console.log("Second Vertex:", [positions[3], positions[4], positions[5]]);
-        }
-
-        // Scan for GPU-crashing NaNs
-        let hasNaN = false;
-        let zeroCount = 0;
-        for (let i = 0; i < Math.min(positions.length, 300); i++) {
-            if (Number.isNaN(positions[i])) hasNaN = true;
-            if (positions[i] === 0) zeroCount++;
-        }
-        console.log("NaNs detected?", hasNaN ? "⚠️ YES (GPU CRASH)" : "No ✅");
-        console.log(`Zeros in first 100 vertices (Z-axis expected): ${zeroCount}/300`);
-        console.groupEnd();
-    }
-
-    return {
-        length: numPaths,
-        startIndices: pathIndices,
-        attributes: { getPath: { value: positions, size: 3 } },
-        rawData
-    };
-}
-
-function processLeaksToBinary(rawData: any[]) {
-    const length = rawData.length;
-    const positions = new Float32Array(length * 3);
-
-    for (let i = 0; i < length; i++) {
-        const flat = extractFlatCoords(rawData[i].coords);
-        positions[i * 3] = flat[0] || 0;     // X
-        positions[i * 3 + 1] = flat[1] || 0; // Y
-        positions[i * 3 + 2] = 0;            // Z
-    }
-
-    return {
-        length,
-        attributes: { getPosition: { value: positions, size: 3 } },
-        rawData
-    };
-}
 
 async function init() {
-    console.log("--- 🕵️ WELLIES FORENSIC START ---");
+    console.log("--- 🕵️ WELLIES ZERO-COPY START ---");
+
+    let activeMaterials = new Set(['AC', 'CI', 'STEEL', 'PE', 'OTHER']);
 
     let activeUtilities = new Set(['drinking']);
     let startYear = 1870;
@@ -204,6 +108,51 @@ async function init() {
     let globalMax = 0;
     const dataCache: Record<string, any> = {};
 
+    // ⚡ THE ZERO-COPY PIPELINE
+    const fetchArrowData = async (key: string, file: string, isPoint = false) => {
+        if (dataCache[key]) return;
+
+        const res = await fetch(`/data/${file}`);
+        const table = await tableFromIPC(res);
+
+        const numRows = table.numRows;
+
+        const coordsCol = table.getChild('coords') as any;
+        const installYearCol = table.getChild('install_year') as any;
+        const lengthMCol = table.getChild('length_m') as any;
+
+        const coordsData = coordsCol?.data[0];
+
+        const flatCoordsArray = coordsData?.children[0]?.values; // The [x,y,x,y...] array
+        const pathOffsetsArray = coordsData?.valueOffsets;       // The [0, 4, 8...] float offsets
+
+        // 🛠️ THE SPIDERWEB FIX: Convert float offsets to vertex offsets
+        let vertexOffsets;
+        if (pathOffsetsArray) {
+            vertexOffsets = new Uint32Array(pathOffsetsArray.length);
+            for (let i = 0; i < pathOffsetsArray.length; i++) {
+                vertexOffsets[i] = pathOffsetsArray[i] / 2;
+            }
+        }
+
+        const binaryData: any = {
+            length: numRows,
+            attributes: {},
+            table: table,
+            years: installYearCol?.data[0]?.values || new Int32Array(numRows),
+            lengths: lengthMCol?.data[0]?.values || new Float32Array(numRows)
+        };
+
+        if (isPoint) {
+            binaryData.attributes.getPosition = { value: flatCoordsArray, size: 2 };
+        } else {
+            binaryData.startIndices = vertexOffsets; // 👈 Pass the corrected array here
+            binaryData.attributes.getPath = { value: flatCoordsArray, size: 2 };
+        }
+
+        dataCache[key] = binaryData;
+    };
+
     const map = new maplibregl.Map({
         container: 'map',
         style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
@@ -217,11 +166,8 @@ async function init() {
 
     const calculateStats = () => {
         const currentActive = Array.from(activeUtilities)[0];
-
-        // Now it's just a standard array directly from the cache!
         const data = dataCache[currentActive];
 
-        // If data isn't there yet, show a loading/empty state and STOP
         if (!data || data.length === 0) {
             u("#audit-stat").html(`<span class="text-slate-500 italic">No data loaded for ${currentActive}...</span>`);
             u("#hist-bg").attr("d", "");
@@ -229,14 +175,24 @@ async function init() {
             return;
         }
 
-        // --- REBUILD BINS IF UTILITY CHANGED ---
+        const numRows = data.length;
+        const years = data.years;
+        const lengths = data.lengths;
+
+        const materialCol = data.table.getChild('material');
+
+        // --- REBUILD BINS ---
         if (lastUtilityId !== currentActive) {
             globalBins = new Array(endYear - startYear + 1).fill(0);
 
-            for (let i = 0; i < data.length; i++) {
-                const yr = Number(data[i].install_year) || 0;
+            // Now using raw Int32/Float32 arrays instead of row objects! (0 allocs)
+            for (let i = 0; i < numRows; i++) {
+                const matCat = getMaterialCategory(materialCol?.get(i));
+                if (!activeMaterials.has(matCat)) continue;
+
+                const yr = years[i] || 0;
                 if (yr >= startYear && yr <= endYear) {
-                    globalBins[yr - startYear] += Number(data[i].length_m) || 0;
+                    globalBins[yr - startYear] += lengths[i] || 0;
                 }
             }
             globalMax = Math.max(...globalBins);
@@ -244,25 +200,26 @@ async function init() {
             const pathData = binsToPath(globalBins, globalMax);
             u("#hist-bg").attr("d", pathData);
             u("#hist-fg").attr("d", pathData);
-
             lastUtilityId = currentActive;
         }
 
-        // --- LIGHTWEIGHT UPDATES: Run on slider/filter move ---
+        // --- LIGHTWEIGHT UPDATES ---
         let totalMeters = 0;
         let visibleCount = 0;
 
-        for (let i = 0; i < data.length; i++) {
-            const yr = Number(data[i].install_year) || 0;
+        for (let i = 0; i < numRows; i++) {
+            const matCat = getMaterialCategory(materialCol?.get(i));
+            if (!activeMaterials.has(matCat)) continue;
+
+            const yr = years[i] || 0;
             const yrForSlider = yr === 0 ? maxFilter : yr;
 
             if (yrForSlider >= minFilter && yrForSlider <= maxFilter && (showUnknown || yr > 0)) {
-                totalMeters += Number(data[i].length_m) || 0;
+                totalMeters += lengths[i] || 0;
                 visibleCount++;
             }
         }
 
-        // 1. Update text stats
         const km = (totalMeters / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 });
         u("#audit-stat").html(`
             <div class="flex justify-between items-center font-mono text-xs">
@@ -271,11 +228,9 @@ async function init() {
             </div>
         `);
 
-        // 2. CSS-only Clip-Path update
         const range = endYear - startYear;
         const startPct = ((minFilter - startYear) / range) * 100;
         const endPct = ((maxFilter - startYear) / range) * 100;
-
         u("#hist-fg").attr("style", `clip-path: polygon(${startPct}% 0%, ${endPct}% 0%, ${endPct}% 100%, ${startPct}% 100%)`);
     };
 
@@ -283,26 +238,31 @@ async function init() {
         const layers: any[] = [];
 
         Object.entries(UTILITY_CONFIG).forEach(([key, config]) => {
-            const isVisible = activeUtilities.has(key);
+            if (!dataCache[key]) return; // Only render if loaded
+
             layers.push(new PathLayer({
                 id: `pipes-${key}`,
-                data: dataCache[key] || `/data/${config.file}`,
-                visible: isVisible,
-                loaders: [ParquetLoader],
-                loadOptions: LOAD_OPTIONS,
+                data: dataCache[key],
+                visible: activeUtilities.has(key),
 
-                // Trivial Accessor: 0 calculations, 0 memory allocations
-                getPath: (d: any) => d._path || [],
-
-                // We still use the target array mutation for crazy fast colors/filters
-                getColor: (d: any, { target }: any) => {
-                    return getAssetColor(d, colorMode, key, target as number[]);
+                // Hybrid Mode: Deck.gl uses our binary coordinates, but evaluates these accessors
+                getColor: (_: any, { index, target }: any) => {
+                    const row = dataCache[key].table.get(index);
+                    return getAssetColor(row, colorMode, key, target as number[]);
                 },
-                getFilterValue: (d: any, { target }: any) => {
-                    const yr = Number(d.install_year) || 0;
+                getFilterValue: (_: any, { index, target }: any) => {
+                    const yr = dataCache[key].years[index];
+
+                    const rawMat = dataCache[key].table.getChild('material')?.get(index);
+                    const matCat = getMaterialCategory(rawMat);
+                    const isMatVisible = activeMaterials.has(matCat);
+
                     const t = target as number[];
                     t[0] = yr === 0 ? maxFilter : yr;
-                    t[1] = yr > 0 ? 1 : 0;
+
+                    const isAgeVisible = yr > 0 || showUnknown;
+                    t[1] = isAgeVisible && isMatVisible ? 1 : 0;
+
                     return t as unknown as [number, number];
                 },
 
@@ -310,66 +270,41 @@ async function init() {
                 pickable: true,
                 autoHighlight: true,
                 extensions: [new DataFilterExtension({ filterSize: 2 })],
-                filterRange: [[minFilter, maxFilter], [showUnknown ? 0 : 1, 1]],
+                filterRange: [[minFilter, maxFilter], [1, 1]],
                 updateTriggers: {
                     getColor: [colorMode],
-                    getFilterValue: [maxFilter],
-                    filterRange: [minFilter, maxFilter, showUnknown]
-                },
-
-                onDataLoad: (data: any) => {
-                    // 💥 PRE-PROCESS EXACTLY ONCE
-                    for (let i = 0; i < data.length; i++) {
-                        data[i]._path = extractPairs(data[i].coords);
-                        delete data[i].coords;
-                    }
-
-                    dataCache[key] = data; // Cache the standard array
-                    if (activeUtilities.has(key)) calculateStats();
-                    return data;
+                    getFilterValue: [maxFilter, showUnknown, Array.from(activeMaterials).join(',')],
+                    filterRange: [minFilter, maxFilter]
                 }
             }));
         });
 
-        layers.push(new ScatterplotLayer({
-            id: "active-leaks",
-            data: dataCache['active_leaks'] || "/data/active_leaks.parquet",
-            loaders: [ParquetLoader],
-            loadOptions: LOAD_OPTIONS,
-            visible: showLeaks && activeUtilities.has('drinking'),
+        if (dataCache['active_leaks']) {
+            layers.push(new ScatterplotLayer({
+                id: "active-leaks",
+                data: dataCache['active_leaks'],
+                visible: showLeaks && activeUtilities.has('drinking'),
 
-            // Trivial Accessor
-            getPosition: (d: any) => d._pos || [0, 0, 0],
+                getFillColor: (_: any, { index, target }: any) => {
+                    const row = dataCache['active_leaks'].table.get(index);
+                    const p = (row.priority || '').toLowerCase();
+                    const t = target as number[];
+                    if (p === 'urgent') return populateColor(t, COLORS.DARK_RED);
+                    if (p === 'high') return populateColor(t, COLORS.ORANGE);
+                    if (p === 'medium') return populateColor(t, COLORS.YELLOW);
+                    return populateColor(t, COLORS.GRAY);
+                },
 
-            getFillColor: (d: any, { target }: any) => {
-                const p = (d.priority || '').toLowerCase();
-                const t = target as number[];
-                if (p === 'urgent') return populateColor(t, COLORS.DARK_RED);
-                if (p === 'high') return populateColor(t, COLORS.ORANGE);
-                if (p === 'medium') return populateColor(t, COLORS.YELLOW);
-                return populateColor(t, COLORS.GRAY);
-            },
-
-            radiusUnits: 'meters',
-            getRadius: 25,
-            radiusMinPixels: 4,
-            stroked: true,
-            getLineColor: [255, 255, 255, 200],
-            lineWidthMinPixels: 1,
-            pickable: true,
-            autoHighlight: true,
-
-            onDataLoad: (data: any) => {
-                // 💥 PRE-PROCESS EXACTLY ONCE
-                for (let i = 0; i < data.length; i++) {
-                    const flat = extractFlatCoords(data[i].coords);
-                    data[i]._pos = flat.length >= 2 ? [flat[0], flat[1], 0] : [0, 0, 0];
-                    delete data[i].coords;
-                }
-                dataCache['active_leaks'] = data;
-                return data;
-            }
-        }));
+                radiusUnits: 'meters',
+                getRadius: 25,
+                radiusMinPixels: 4,
+                stroked: true,
+                getLineColor: [255, 255, 255, 200],
+                lineWidthMinPixels: 1,
+                pickable: true,
+                autoHighlight: true
+            }));
+        }
 
         return layers;
     };
@@ -378,7 +313,6 @@ async function init() {
     const refresh = () => {
         if (isTicking) return;
         isTicking = true;
-
         window.requestAnimationFrame(() => {
             u("#year-label").text(`${minFilter} - ${maxFilter}`);
             if (deck) deck.setProps({ layers: getLayers() });
@@ -388,23 +322,29 @@ async function init() {
     };
 
     try {
+        // Pre-fetch the default map assets before booting deck.gl
+        await fetchArrowData('drinking', UTILITY_CONFIG.drinking.file, false);
+        await fetchArrowData('active_leaks', 'active_leaks.arrow.br', true);
+
         deck = new Deck({
             canvas: 'deck-canvas',
-            useDevicePixels: false, // --- OPTIMIZATION 6: DISABLE RETINA FOR HIGH FRAGMENT COUNTS ---
+            useDevicePixels: false,
             initialViewState: { longitude: 174.7762, latitude: -41.2865, zoom: 11 },
             controller: true,
 
             getTooltip: ({ index, layer }: any) => {
                 if (!layer?.props.visible || index < 0) return null;
+                const binaryData = layer.props.data;
+                if (!binaryData || !binaryData.table) return null;
 
-                const object = layer.props.data[index];
-                if (!object) return null;
+                const row = binaryData.table.get(index);
+                if (!row) return null;
 
                 const isLeak = layer.id === 'active-leaks';
                 return {
                     html: isLeak
-                        ? `<div class="p-2 font-mono text-xs"><b class="text-red-400">ACTIVE LEAK</b><hr class="my-1 opacity-20"/>${object.wsadd_formattedaddress || 'Unknown Address'}</div>`
-                        : `<div class="p-2 font-mono text-xs"><b class="text-blue-400">${object.asset_id}</b><hr class="my-1 opacity-20"/>${object.material} | ${object.diameter_mm}mm</div>`,
+                        ? `<div class="p-2 font-mono text-xs"><b class="text-red-400">ACTIVE LEAK</b><hr class="my-1 opacity-20"/>${row.status || ''} | Priority: ${row.priority || 'N/A'}</div>`
+                        : `<div class="p-2 font-mono text-xs"><b class="text-blue-400">${row.asset_id || 'Pipe'}</b><hr class="my-1 opacity-20"/>${row.material || 'Unknown'} | ${row.diameter_mm || '? '}mm</div>`,
                     style: { backgroundColor: 'rgba(15, 23, 42, 0.95)', color: '#fff', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)' }
                 };
             },
@@ -420,22 +360,50 @@ async function init() {
             layers: getLayers()
         });
 
-        // UI Event Bindings (Unchanged)
-        u(".utility-tab").on("click", (e: any) => {
+        // Initial Draw
+        refresh();
+
+        // UI Event Bindings
+        u(".utility-tab").on("click", async (e: any) => {
             const id = e.target.id.replace('tab-', '');
             activeUtilities.clear();
             activeUtilities.add(id);
             u(".utility-tab").removeClass("bg-blue-600 text-white shadow-md").addClass("text-slate-400");
             u(`#tab-${id}`).addClass("bg-blue-600 text-white shadow-md").removeClass("text-slate-400");
             lastUtilityId = "";
+
+            refresh(); // Triggers loading state in the UI instantly
+            await fetchArrowData(id, UTILITY_CONFIG[id].file, false);
+            refresh(); // Renders the map once data arrives
+        });
+
+        u("#btn-mat-all").on("click", () => {
+            activeMaterials = new Set(['AC', 'CI', 'STEEL', 'PE', 'OTHER']);
+            u(".mat-filter").each((node) => { (node as HTMLInputElement).checked = true; });
+            lastUtilityId = "";
+            refresh();
+        });
+
+        u("#btn-mat-none").on("click", () => {
+            activeMaterials.clear();
+            u(".mat-filter").each((node) => { (node as HTMLInputElement).checked = false; });
+            lastUtilityId = "";
+            refresh();
+        });
+
+        u(".mat-filter").on("change", (e: any) => {
+            const matValue = e.target.value;
+            if (e.target.checked) {
+                activeMaterials.add(matValue);
+            } else {
+                activeMaterials.delete(matValue);
+            }
+            lastUtilityId = "";
             refresh();
         });
 
         u("#zoom-location").on("click", () => {
-            if (!navigator.geolocation) {
-                alert("Geolocation is not supported by your browser");
-                return;
-            }
+            if (!navigator.geolocation) return alert("Geolocation not supported");
             u("#zoom-location").addClass("animate-pulse text-blue-500");
             navigator.geolocation.getCurrentPosition(
                 (pos) => {
@@ -453,21 +421,21 @@ async function init() {
                 },
                 (err) => {
                     u("#zoom-location").removeClass("animate-pulse text-blue-500");
-                    console.error("GPS Error:", err);
-                    alert("Unable to find your location. Check your GPS settings.");
+                    console.error(err);
                 },
                 { enableHighAccuracy: true }
             );
         });
 
         u("#color-mode").on("change", (e: any) => { colorMode = e.target.value; refresh(); });
+        u("#toggle-unknown").on("change", (e: any) => { showUnknown = e.target.checked; refresh(); });
+        u("#toggle-leaks").on("change", (e: any) => { showLeaks = e.target.checked; refresh(); });
 
         u("#year-min").on("input", (e: any) => {
             minFilter = parseInt(e.target.value);
             if (minFilter > maxFilter) {
                 maxFilter = minFilter;
-                const maxSlider = u("#year-max").first() as HTMLInputElement;
-                if (maxSlider) maxSlider.value = String(maxFilter);
+                (u("#year-max").first() as HTMLInputElement).value = String(maxFilter);
             }
             refresh();
         });
@@ -476,8 +444,7 @@ async function init() {
             maxFilter = parseInt(e.target.value);
             if (maxFilter < minFilter) {
                 minFilter = maxFilter;
-                const minSlider = u("#year-min").first() as HTMLInputElement;
-                if (minSlider) minSlider.value = String(minFilter);
+                (u("#year-min").first() as HTMLInputElement).value = String(minFilter);
             }
             refresh();
         });
@@ -487,34 +454,23 @@ async function init() {
             const isHidden = body.hasClass("hidden");
             const isMobile = window.innerWidth < 640;
             body.toggleClass("hidden");
-            const rotation = isHidden ? "rotate(0deg)" : "rotate(180deg)";
-            u("#arrow").attr("style", `transform: ${rotation}`);
+            u("#arrow").attr("style", `transform: ${isHidden ? "rotate(0deg)" : "rotate(180deg)"}`);
             if (isMobile) setTimeout(() => map.resize(), 300);
         };
 
         u("#toggle-ui").on("click", toggleAction);
         u("#mobile-handle").on("click", toggleAction);
-
-        const bringToFront = (selector: string) => {
+        u("#year-min, #year-max").on("mousedown", (e: any) => {
             u("#year-min, #year-max").attr("style", "z-index: 10");
-            u(selector).attr("style", "z-index: 20");
-        };
-
-        u("#year-min").on("mousedown", () => bringToFront("#year-min"));
-        u("#year-max").on("mousedown", () => bringToFront("#year-max"));
-
-        u("#toggle-unknown").on("change", (e: any) => { showUnknown = e.target.checked; refresh(); });
-        u("#toggle-leaks").on("change", (e: any) => { showLeaks = e.target.checked; refresh(); });
+            u(e.target).attr("style", "z-index: 20");
+        });
 
         const modal = u("#modal-overlay");
         u("#open-modal").on("click", () => modal.removeClass("hidden"));
         u("#close-modal").on("click", () => modal.addClass("hidden"));
-        modal.on("click", (e: any) => {
-            if (e.target.id === "modal-overlay") modal.addClass("hidden");
-        });
+        modal.on("click", (e: any) => { if (e.target.id === "modal-overlay") modal.addClass("hidden"); });
 
-        const resizeObserver = new ResizeObserver(() => map.resize());
-        resizeObserver.observe(document.getElementById('map')!);
+        new ResizeObserver(() => map.resize()).observe(document.getElementById('map')!);
 
     } catch (err) {
         console.error("💥 INIT FATAL ERROR:", err);
