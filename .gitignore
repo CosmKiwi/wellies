@@ -52,3 +52,12 @@ plombery.db-journal
 
 # Data Cache
 .cache_db/
+
+# Cloudflare Worker artifacts
+.wrangler/
+wellies-proxy/dist/
+wellies-proxy/.dev.vars
+
+# TypeScript generated files (if applicable)
+*.tsbuildinfo
+wellies-proxy/test/env.d.ts
