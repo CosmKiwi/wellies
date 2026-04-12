@@ -2,9 +2,11 @@
 import { defineConfig } from 'vite';
 import wasm from "vite-plugin-wasm";
 import topLevelAwait from "vite-plugin-top-level-await";
+import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
     plugins: [
+        tailwindcss(),
         wasm(),
         topLevelAwait(),
         {
@@ -27,8 +29,6 @@ export default defineConfig({
         },
     },
     optimizeDeps: {
-        // Exclude the WASM-heavy lib so Vite doesn't try to bundle it
-        exclude: ['@geoarrow/geoparquet-wasm'],
         include: [
             '@deck.gl/core',
             '@deck.gl/layers',
@@ -43,6 +43,8 @@ export default defineConfig({
         }
     },
     build: {
-        target: 'esnext'
+        target: 'esnext',
+        outDir: 'dist', // This will be apps/web/dist
+        emptyOutDir: true,
     }
 });
