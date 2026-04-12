@@ -4,6 +4,7 @@ import { PathLayer, ScatterplotLayer } from "@deck.gl/layers";
 import { DataFilterExtension } from "@deck.gl/extensions";
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import './style.css';
 
 // 🚀 THE MAGIC IMPORT: Natively parses Arrow IPC streams
 import { tableFromIPC } from 'apache-arrow';
@@ -112,7 +113,9 @@ async function init() {
     const fetchArrowData = async (key: string, file: string, isPoint = false) => {
         if (dataCache[key]) return;
 
-        const res = await fetch(`/data/${file}`);
+        const IS_DEV = window.location.hostname === 'localhost';
+        const DATA_HOST = IS_DEV ? '/data' : 'https://data.wellies.app';
+        const res = await fetch(`${DATA_HOST}/${file}`);
         const table = await tableFromIPC(res);
 
         const numRows = table.numRows;
