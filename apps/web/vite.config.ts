@@ -13,10 +13,15 @@ export default defineConfig({
             name: 'brotli-header-injector',
             configureServer(server) {
                 server.middlewares.use((req, res, next) => {
-                    if (req.url?.endsWith('.arrow.br')) {
+                    // 👻 LOCAL GHOST EXTENSION TRICK
+                    // If the frontend asks for an uncompressed file...
+                    if (req.url?.endsWith('.arrow')) {
+                        // 1. Set the Zero-Copy headers
                         res.setHeader('Content-Encoding', 'br');
                         res.setHeader('Content-Type', 'application/vnd.apache.arrow.stream');
-                        req.url = req.url;
+
+                        // 2. Secretly rewrite the internal URL so Vite finds the compressed file on disk
+                        req.url = req.url + '.br';
                     }
                     next();
                 });
@@ -44,7 +49,7 @@ export default defineConfig({
     },
     build: {
         target: 'esnext',
-        outDir: 'dist', // This will be apps/web/dist
+        outDir: 'dist',
         emptyOutDir: true,
     }
 });

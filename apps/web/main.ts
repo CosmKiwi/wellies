@@ -94,7 +94,6 @@ async function init() {
     console.log("--- 🕵️ WELLIES ZERO-COPY START ---");
 
     let activeMaterials = new Set(['AC', 'CI', 'STEEL', 'PE', 'OTHER']);
-
     let activeUtilities = new Set(['drinking']);
     let startYear = 1870;
     let endYear = 2026;
@@ -111,49 +110,69 @@ async function init() {
 
     // ⚡ THE ZERO-COPY PIPELINE
     const fetchArrowData = async (key: string, file: string, isPoint = false) => {
-        if (dataCache[key]) return;
+        if (dataCache[key] && dataCache[key].length > 0) return;
 
-        const IS_DEV = window.location.hostname === 'localhost';
-        const DATA_HOST = IS_DEV ? '/data' : 'https://data.wellies.app';
-        const res = await fetch(`${DATA_HOST}/${file}`);
-        const table = await tableFromIPC(res);
+        try {
+            const IS_DEV = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            const DATA_HOST = IS_DEV ? '/data' : 'https://data.wellies.app';
 
-        const numRows = table.numRows;
+            const res = await fetch(`${DATA_HOST}/${file}`);
+            if (!res.ok) throw new Error(`HTTP Error ${res.status}: ${res.statusText}`);
 
-        const coordsCol = table.getChild('coords') as any;
-        const installYearCol = table.getChild('install_year') as any;
-        const lengthMCol = table.getChild('length_m') as any;
+            // Force the browser's native C++ engine to download and fully decompress 
+            // the Brotli payload before JavaScript touches it.
+            const buffer = await res.arrayBuffer();
 
-        const coordsData = coordsCol?.data[0];
+            // Now pass the pristine, uncompressed bytes to Arrow
+            const table = tableFromIPC(buffer);
 
-        const flatCoordsArray = coordsData?.children[0]?.values; // The [x,y,x,y...] array
-        const pathOffsetsArray = coordsData?.valueOffsets;       // The [0, 4, 8...] float offsets
+            const numRows = table.numRows;
+            const coordsCol = table.getChild('coords') as any;
+            const installYearCol = table.getChild('install_year') as any;
+            const lengthMCol = table.getChild('length_m') as any;
 
-        // 🛠️ THE SPIDERWEB FIX: Convert float offsets to vertex offsets
-        let vertexOffsets;
-        if (pathOffsetsArray) {
-            vertexOffsets = new Uint32Array(pathOffsetsArray.length);
-            for (let i = 0; i < pathOffsetsArray.length; i++) {
-                vertexOffsets[i] = pathOffsetsArray[i] / 2;
+            const coordsData = coordsCol?.data[0];
+            const flatCoordsArray = coordsData?.children[0]?.values; // The [x,y,x,y...] array
+            const pathOffsetsArray = coordsData?.valueOffsets;       // The [0, 4, 8...] float offsets
+
+            // 🛠️ THE SPIDERWEB FIX: Convert float offsets to vertex offsets
+            let vertexOffsets;
+            if (pathOffsetsArray) {
+                vertexOffsets = new Uint32Array(pathOffsetsArray.length);
+                for (let i = 0; i < pathOffsetsArray.length; i++) {
+                    vertexOffsets[i] = pathOffsetsArray[i] / 2;
+                }
             }
+
+            const binaryData: any = {
+                length: numRows,
+                attributes: {},
+                table: table,
+                years: installYearCol?.data[0]?.values || new Int32Array(numRows),
+                lengths: lengthMCol?.data[0]?.values || new Float32Array(numRows)
+            };
+
+            if (isPoint) {
+                binaryData.attributes.getPosition = { value: flatCoordsArray, size: 2 };
+            } else {
+                binaryData.startIndices = vertexOffsets;
+                binaryData.attributes.getPath = { value: flatCoordsArray, size: 2 };
+            }
+
+            dataCache[key] = binaryData;
+
+        } catch (err) {
+            console.error(`⚠️ Non-fatal error loading ${key} (${file}):`, err);
+
+            // Graceful Degradation: Insert an empty mock dataset so Deck.gl doesn't crash
+            dataCache[key] = {
+                length: 0,
+                attributes: {},
+                table: { getChild: () => null, get: () => null }, // Mock table methods
+                years: new Int32Array(0),
+                lengths: new Float32Array(0)
+            };
         }
-
-        const binaryData: any = {
-            length: numRows,
-            attributes: {},
-            table: table,
-            years: installYearCol?.data[0]?.values || new Int32Array(numRows),
-            lengths: lengthMCol?.data[0]?.values || new Float32Array(numRows)
-        };
-
-        if (isPoint) {
-            binaryData.attributes.getPosition = { value: flatCoordsArray, size: 2 };
-        } else {
-            binaryData.startIndices = vertexOffsets; // 👈 Pass the corrected array here
-            binaryData.attributes.getPath = { value: flatCoordsArray, size: 2 };
-        }
-
-        dataCache[key] = binaryData;
     };
 
     const map = new maplibregl.Map({
@@ -181,7 +200,6 @@ async function init() {
         const numRows = data.length;
         const years = data.years;
         const lengths = data.lengths;
-
         const materialCol = data.table.getChild('material');
 
         // --- REBUILD BINS ---
@@ -248,7 +266,6 @@ async function init() {
                 data: dataCache[key],
                 visible: activeUtilities.has(key),
 
-                // Hybrid Mode: Deck.gl uses our binary coordinates, but evaluates these accessors
                 getColor: (_: any, { index, target }: any) => {
                     const row = dataCache[key].table.get(index);
                     return getAssetColor(row, colorMode, key, target as number[]);
@@ -290,6 +307,7 @@ async function init() {
 
                 getFillColor: (_: any, { index, target }: any) => {
                     const row = dataCache['active_leaks'].table.get(index);
+                    if (!row) return populateColor(target as number[], COLORS.GRAY);
                     const p = (row.priority || '').toLowerCase();
                     const t = target as number[];
                     if (p === 'urgent') return populateColor(t, COLORS.DARK_RED);
@@ -325,10 +343,7 @@ async function init() {
     };
 
     try {
-        // Pre-fetch the default map assets before booting deck.gl
-        await fetchArrowData('drinking', UTILITY_CONFIG.drinking.file, false);
-        await fetchArrowData('active_leaks', 'active_leaks.arrow', true);
-
+        // 1. BOOT THE MAP IMMEDIATELY
         deck = new Deck({
             canvas: 'deck-canvas',
             useDevicePixels: false,
@@ -360,13 +375,10 @@ async function init() {
                     pitch: viewState.pitch
                 });
             },
-            layers: getLayers()
+            layers: [] // Start empty
         });
 
-        // Initial Draw
-        refresh();
-
-        // UI Event Bindings
+        // 2. BIND UI EVENTS
         u(".utility-tab").on("click", async (e: any) => {
             const id = e.target.id.replace('tab-', '');
             activeUtilities.clear();
@@ -474,6 +486,18 @@ async function init() {
         modal.on("click", (e: any) => { if (e.target.id === "modal-overlay") modal.addClass("hidden"); });
 
         new ResizeObserver(() => map.resize()).observe(document.getElementById('map')!);
+
+        // 3. INITIAL DRAW (renders map instantly)
+        refresh();
+
+        // 4. FETCH DATA IN BACKGROUND
+        Promise.all([
+            fetchArrowData('drinking', UTILITY_CONFIG.drinking.file, false),
+            fetchArrowData('active_leaks', 'active_leaks.arrow', true)
+        ]).then(() => {
+            // Re-render map and stats once data arrives
+            refresh();
+        });
 
     } catch (err) {
         console.error("💥 INIT FATAL ERROR:", err);
