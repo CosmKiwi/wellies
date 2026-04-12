@@ -116,14 +116,12 @@ async function init() {
             const IS_DEV = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
             const DATA_HOST = IS_DEV ? '/data' : 'https://data.wellies.app';
 
-            const res = await fetch(`${DATA_HOST}/${file}`);
+            const res = await fetch(`${DATA_HOST}/${file}.gz`);
             if (!res.ok) throw new Error(`HTTP Error ${res.status}: ${res.statusText}`);
 
-            // Force the browser's native C++ engine to download and fully decompress 
-            // the Brotli payload before JavaScript touches it.
-            const buffer = await res.arrayBuffer();
-
-            // Now pass the pristine, uncompressed bytes to Arrow
+            const ds = new DecompressionStream('gzip');
+            const decompressedStream = res.body!.pipeThrough(ds);
+            const buffer = await new Response(decompressedStream).arrayBuffer();
             const table = tableFromIPC(buffer);
 
             const numRows = table.numRows;
@@ -162,7 +160,7 @@ async function init() {
             dataCache[key] = binaryData;
 
         } catch (err) {
-            console.error(`⚠️ Non-fatal error loading ${key} (${file}):`, err);
+            console.error(`⚠️ Non-fatal error loading ${key} (${file}.gz):`, err);
 
             // Graceful Degradation: Insert an empty mock dataset so Deck.gl doesn't crash
             dataCache[key] = {
