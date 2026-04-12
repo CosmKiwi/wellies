@@ -6,8 +6,7 @@ from pathlib import Path
 import diskcache
 import pyarrow as pa
 import pyarrow.parquet as pq
-import brotli
-
+import gzip
 cache = diskcache.Cache(Path(__file__).parent / ".cache_db")
 
 def get_paged_data(url, layer_name, ttl_hours=6):
@@ -134,11 +133,15 @@ def run_sync(config, logger):
         sink = pa.BufferOutputStream()
         with pa.RecordBatchStreamWriter(sink, schema) as writer:
             writer.write_table(table)
-            
-        compressed_bytes = brotli.compress(sink.getvalue().to_pybytes())
-        arrow_file = output_path.with_suffix('.arrow.br')
-        with open(arrow_file, "wb") as f:
-            f.write(compressed_bytes)
+
+        arrow_file = output_path.with_suffix('.arrow.gz')
+        with gzip.open(arrow_file, 'wb', compresslevel=9) as f:
+            f.write(sink.getvalue().to_pybytes())
+
+        # compressed_bytes = brotli.compress(sink.getvalue().to_pybytes())
+        # arrow_file = output_path.with_suffix('.arrow.br')
+        # with open(arrow_file, "wb") as f:
+        #     f.write(compressed_bytes)
         
         logger.info(f"✅ Saved Arrow (Core) to {arrow_file}")
 
