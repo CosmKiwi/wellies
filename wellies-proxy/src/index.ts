@@ -11,25 +11,40 @@ export default {
 			return new Response('Wellies Proxy Active', { status: 200 });
 		}
 
-		const object = await env.WELLIES_BUCKET.get(objectName);
+		let fetchKey = objectName;
+		if (objectName.endsWith('.arrow')) {
+			fetchKey = objectName + '.br';
+		}
+
+		const object = await env.WELLIES_BUCKET.get(fetchKey);
 
 		if (object === null) {
-			return new Response('File Not Found', { status: 404 });
+			return new Response(`File Not Found: ${fetchKey}`, { status: 404 });
 		}
 
 		const headers = new Headers();
 		object.writeHttpMetadata(headers);
 		headers.set('etag', object.httpEtag);
-		if (objectName.endsWith('.arrow.br')) {
+
+		if (objectName.endsWith('.arrow')) {
 			headers.set('Content-Encoding', 'br');
 			headers.set('Content-Type', 'application/vnd.apache.arrow.stream');
 		}
-		headers.set("Access-Control-Allow-Origin", "https://wellies.app");
-		headers.set("Vary", "Origin");
-		headers.set('Cache-Control', 'public, max-age=31536000');
 
-		return new Response(object.body, {
-			headers,
-		});
+		const origin = request.headers.get("Origin");
+		if (origin && (
+			origin === "https://wellies.app" ||
+			origin.endsWith("wellies.pages.dev") ||
+			origin.startsWith("http://localhost:")
+		)) {
+			headers.set("Access-Control-Allow-Origin", origin);
+		} else {
+			headers.set("Access-Control-Allow-Origin", "https://wellies.app");
+		}
+
+		headers.set("Vary", "Origin");
+		headers.set('Cache-Control', 'public, max-age=31536000, no-transform');
+
+		return new Response(object.body, { headers });
 	},
 };

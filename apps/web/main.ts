@@ -54,9 +54,9 @@ const binsToPath = (bins: number[], maxVal: number, startIndex: number = 0, endI
 
 // 🎯 Point to the pre-compressed Arrow files
 const UTILITY_CONFIG: Record<string, { file: string, color: [number, number, number], label: string }> = {
-    drinking: { file: 'drinking_water_pipes.arrow.br', color: [0, 150, 255], label: 'Drinking' },
-    waste: { file: 'waste_water_pipes.arrow.br', color: [168, 85, 247], label: 'Waste' },
-    storm: { file: 'storm_water_pipes.arrow.br', color: [34, 197, 94], label: 'Storm' }
+    drinking: { file: 'drinking_water_pipes.arrow', color: [0, 150, 255], label: 'Drinking' },
+    waste: { file: 'waste_water_pipes.arrow', color: [168, 85, 247], label: 'Waste' },
+    storm: { file: 'storm_water_pipes.arrow', color: [34, 197, 94], label: 'Storm' }
 };
 
 const populateColor = (target: number[], source: [number, number, number, number?]): [number, number, number, number] => {
@@ -327,7 +327,7 @@ async function init() {
     try {
         // Pre-fetch the default map assets before booting deck.gl
         await fetchArrowData('drinking', UTILITY_CONFIG.drinking.file, false);
-        await fetchArrowData('active_leaks', 'active_leaks.arrow.br', true);
+        await fetchArrowData('active_leaks', 'active_leaks.arrow', true);
 
         deck = new Deck({
             canvas: 'deck-canvas',
