@@ -6,6 +6,7 @@ from pathlib import Path
 import diskcache
 import pyarrow as pa
 import pyarrow.parquet as pq
+import brotli
 
 cache = diskcache.Cache(Path(__file__).parent / ".cache_db")
 
@@ -59,57 +60,86 @@ def get_year_from_ts(ts):
     except (OverflowError, ValueError): return None
 
 def run_sync(config, logger):
-    # Standardize data dir (ensure it exists)
     DATA_DIR = Path(__file__).parent.parent.parent / "apps" / "web" / "public" / "data"
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"🛰️ Requesting data for {config['name']}...")
-    raw_data = get_paged_data(config['url'], config['name'])
+    raw_data = get_paged_data(config['url'], config['name'], config['cache_ttl_hours'])
     
-    all_rows = []
+    arrow_rows = []
+    parquet_rows = []
+
     for f in raw_data["features"]:
         attrs = f["attributes"]
         geom = f.get("geometry")
         if not geom: continue
 
-        # --- OPTIMIZATION 1: FLAT COORDINATES ---
+        # Standardize Coords
         if config.get('type') == "line":
-            # Flatten to a single 1D list: [lon1, lat1, lon2, lat2, ...]
-            # This completely eliminates the deep nesting in loaders.gl
             coords = []
             for pt in geom["paths"][0]:
                 coords.extend([float(pt[0]), float(pt[1])])
         else:
             coords = [float(geom["x"]), float(geom["y"])]
 
-        # Map requested columns
-        row = {col: attrs.get(col) for col in config.get('columns', [])}
-        row["coords"] = coords
-        
-        ts = attrs.get("date_installed")
-        # Default missing years to 0 here to avoid NaN handling in JS
-        row["install_year"] = get_year_from_ts(ts) or 0 
-        
-        row["length_m"] = float(attrs.get("length_m") or attrs.get("SHAPE_Length") or 0.0)
+        # Shared calculated fields
+        install_year = get_year_from_ts(attrs.get("date_installed")) or 0
+        length_m = float(attrs.get("length_m") or attrs.get("SHAPE_Length") or 0.0)
 
-        all_rows.append(row)
+        # 1. Build Arrow Row (Core Data) - WITH SANITIZATION
+        a_row = {}
+        for col in config.get('arrow_columns', []):
+            val = attrs.get(col)
+            # Force to string unless it's a null-type (NaN/None)
+            # This prevents "Expected bytes, got a 'float' object" errors
+            a_row[col] = str(val) if not pd.isna(val) else None
+            
+        a_row.update({
+            "coords": coords, 
+            "install_year": install_year, 
+            "length_m": length_m
+        })
+        arrow_rows.append(a_row)
 
-    # --- OPTIMIZATION 2: DOWNCASTING MEMORY ---
-    df = pd.DataFrame(all_rows)
-    
-    # Force float32 (deck.gl only uses 32-bit floats anyway) and lower-bit integers
-    df['length_m'] = df['length_m'].astype('float32')
-    df['install_year'] = df['install_year'].astype('int32')
+        # 2. Build Parquet Row (Supplementary Data)
+        p_row = {col: attrs.get(col) for col in config.get('parquet_columns', [])}
+        p_row.update({"install_year": install_year, "length_m": length_m})
+        parquet_rows.append(p_row)
 
     output_path = DATA_DIR / config['output_file']
-    
-    # --- OPTIMIZATION 3: ZSTD COMPRESSION ---
-    df.to_parquet(
-        output_path, 
-        index=False, 
-        engine='pyarrow', 
-        compression='zstd' 
-    )
-    
-    logger.info(f"✅ Saved {len(df)} rows to {output_path}")
-    return len(df)
+
+    # --- PARQUET EXPORT (Supplementary) ---
+    df_p = pd.DataFrame(parquet_rows)
+    if not df_p.empty:
+        df_p['length_m'] = df_p['length_m'].astype('float32')
+        df_p['install_year'] = df_p['install_year'].astype('int32')
+        
+        parquet_file = output_path.with_suffix('.parquet')
+        df_p.to_parquet(parquet_file, index=False, engine='pyarrow', compression='zstd')
+        logger.info(f"✅ Saved Parquet (Metadata) to {parquet_file}")
+
+    # --- ARROW EXPORT (Core) ---
+    if arrow_rows:
+        # Schema definition matches the string-forced columns above
+        fields = [(col, pa.string()) for col in config.get('arrow_columns', [])]
+        fields.extend([
+            ('coords', pa.list_(pa.float32())),
+            ('install_year', pa.int32()),
+            ('length_m', pa.float32())
+        ])
+        schema = pa.schema(fields)
+        
+        # from_pylist will now succeed because all types match the schema
+        table = pa.Table.from_pylist(arrow_rows, schema=schema)
+        sink = pa.BufferOutputStream()
+        with pa.RecordBatchStreamWriter(sink, schema) as writer:
+            writer.write_table(table)
+            
+        compressed_bytes = brotli.compress(sink.getvalue().to_pybytes())
+        arrow_file = output_path.with_suffix('.arrow.br')
+        with open(arrow_file, "wb") as f:
+            f.write(compressed_bytes)
+        
+        logger.info(f"✅ Saved Arrow (Core) to {arrow_file}")
+
+    return len(arrow_rows)
