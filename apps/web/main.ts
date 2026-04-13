@@ -93,6 +93,33 @@ const getAssetColor = (row: any, mode: string, utility: string, target: number[]
 async function init() {
     console.log("--- 🕵️ WELLIES ZERO-COPY START ---");
 
+    const handleContextLoss = (e: Event) => {
+        e.preventDefault();
+        console.warn("💥 WebGL Context Lost! Reclaiming GPU...");
+        window.location.reload();
+    };
+
+    const deckCanvas = u('#deck-canvas').first();
+    if (deckCanvas) {
+        deckCanvas.addEventListener('webglcontextlost', handleContextLoss, false);
+    }
+
+    let lastActiveTime = Date.now();
+
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") {
+            const timeAsleep = Date.now() - lastActiveTime;
+            // If backgrounded for more than 5 minutes (300,000 ms), reload on wake
+            if (timeAsleep > 300000) {
+                console.log("Waking up from deep sleep, refreshing state...");
+                window.location.reload();
+            }
+        } else {
+            // App was backgrounded
+            lastActiveTime = Date.now();
+        }
+    });
+
     let activeMaterials = new Set(['AC', 'CI', 'STEEL', 'PE', 'OTHER']);
     let activeUtilities = new Set(['drinking']);
     let startYear = 1870;
