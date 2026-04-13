@@ -96,14 +96,14 @@ async function init() {
     let activeMaterials = new Set(['AC', 'CI', 'STEEL', 'PE', 'OTHER']);
     let activeUtilities = new Set(['drinking']);
     let startYear = 1870;
-    let endYear = 2026;
+    let endYear = new Date().getFullYear();
     let minFilter = startYear;
     let maxFilter = endYear;
     let showUnknown = true;
     let showLeaks = true;
     let colorMode = 'default';
 
-    let deck: any = null;
+    let deck: Deck | null = null;
     let globalBins: number[] = [];
     let globalMax = 0;
     const dataCache: Record<string, any> = {};
@@ -161,6 +161,7 @@ async function init() {
 
         } catch (err) {
             console.error(`⚠️ Non-fatal error loading ${key} (${file}.gz):`, err);
+            u("#audit-stat").html(`<span class="text-red-400 font-bold">⚠️ Data unavailable for ${key}...</span>`);
 
             // Graceful Degradation: Insert an empty mock dataset so Deck.gl doesn't crash
             dataCache[key] = {
@@ -421,16 +422,18 @@ async function init() {
             navigator.geolocation.getCurrentPosition(
                 (pos) => {
                     u("#zoom-location").removeClass("animate-pulse text-blue-500");
-                    deck.setProps({
-                        initialViewState: {
-                            ...deck.props.initialViewState,
-                            longitude: pos.coords.longitude,
-                            latitude: pos.coords.latitude,
-                            zoom: 17,
-                            transitionDuration: 2000,
-                            transitionInterpolator: new FlyToInterpolator()
-                        }
-                    });
+                    if (deck) {
+                        deck.setProps({
+                            initialViewState: {
+                                ...deck.props.initialViewState,
+                                longitude: pos.coords.longitude,
+                                latitude: pos.coords.latitude,
+                                zoom: 17,
+                                transitionDuration: 2000,
+                                transitionInterpolator: new FlyToInterpolator()
+                            }
+                        });
+                    }
                 },
                 (err) => {
                     u("#zoom-location").removeClass("animate-pulse text-blue-500");
