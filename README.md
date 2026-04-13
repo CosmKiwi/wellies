@@ -1,14 +1,31 @@
-# Wellies 🚀
+<p align="center">
+  <a href="https://wellies.app">
+    <img src="https://wellies.app/images/gumboots_460.png" alt="Wellies Logo" width="180"/>
+  </a>
+</p>
 
-Wellies is a high-performance web mapping application built to visualize large-scale geospatial data using **Deck.gl**, **MapLibre**, and **Apache Arrow**. It is structured as a monorepo containing the frontend web application, a data integration pipeline, and a Cloudflare proxy.
+# Wellies
 
-## 🏗️ Monorepo Architecture
+View the live app here: <a href="https://wellies.app">https://wellies.app</a></strong>
 
-This repository uses Bun workspaces and is organized into the following components:
+**Wellies** is an independent, open-source tool designed to visualize the water infrastructure of the Wellington Region. It provides a historical and spatial overview of networks using publicly available data.
 
-- `apps/web`: The main frontend client built with Vite, TypeScript, and Deck.gl.
-- `packages/pipeline`: A Python-based ingestion system that fetches raw GIS data, processes it, and continuously publishes zero-copy Apache Arrow buffers.
-- `wellies-proxy`: A Cloudflare Worker handling secure proxy routing to the R2 asset bucket.
+---
+
+## 🏗️ System Architecture
+
+Wellies is a high-performance web mapping application built to handle large-scale geospatial data. It uses a fully decoupled, zero-copy binary streaming pipeline.
+
+* **Visuals:** [Deck.gl](https://deck.gl/) & [MapLibre](https://maplibre.org/)
+* **Format:** [Apache Arrow](https://arrow.apache.org/) (Zero-copy IPC streams via native HTTP GZIP)
+* **Pipeline:** [Plombery](https://github.com/lucafaggianelli/plombery) & [anyio](https://anyio.readthedocs.io/)
+* **Interface:** [Umbrella JS](https://umbrellajs.com/)
+
+This repository uses [Bun](https://bun.sh/) workspaces and is organized into the following components:
+
+* `apps/web`: The main frontend client built with Vite and TypeScript.
+* `packages/pipeline`: A Python-based ingestion system that fetches raw GIS data, processes it, and continuously publishes compressed Apache Arrow buffers.
+* `wellies-proxy`: A Cloudflare Worker handling secure, edge-cached proxy routing to an R2 asset bucket.
 
 ## 🚀 Getting Started
 
@@ -21,31 +38,44 @@ bun install
 ```
 
 ### 2. Local Development
+Run the Web App (Frontend):
 
-**Run the web app (Frontend):**
 ```bash
 bun run dev
 ```
-Starts the Vite development server for the `apps/web` project.
+Starts the Vite development server for the apps/web project.
 
-**Run the Proxy:**
+Run the Proxy:
+
 ```bash
 cd wellies-proxy
 bun run dev
 ```
-Starts the local Wrangler environment.
+Starts the local Cloudflare Wrangler environment.
 
-**Run the Pipeline Engine:**
-The pipeline requires Python. We recommend using `uv` or creating a virtual environment:
+Run the Pipeline Engine:
+The pipeline requires Python. We recommend using uv or creating a virtual environment:
+
 ```bash
 cd packages/pipeline
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt # (or `uv sync`)
-python tasks.py
+uv sync
+uv run tasks.py
 ```
-> Note: The pipeline uses the `WELLIES_DATA_DIR` environment variable to determine where `.arrow.gz` files are compiled. If unset, it attempts to drop files directly into `apps/web/public/data`.
+Note: The pipeline uses the WELLIES_DATA_DIR environment variable to determine where .arrow.gz files are compiled. If unset, it attempts to drop files directly into apps/web/public/data.
 
-## 📜 License
+### 📊 Data & Credits
+Infrastructure Data: Wellington Water Open Data Portal (WCC, HCC, UHCC, PCC, SWDC, and GWRC).
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Basemaps: © OpenStreetMap contributors, styled by CARTO.
+
+### ⚠️ Disclaimer & Data Accuracy
+Third-Party Tool: This application is strictly independent. It is not affiliated with or endorsed by Wellington Water Ltd or any regional council.
+
+Educational Use Only: Not suitable for engineering design, property development, or on-site decision-making.
+
+No Liability: By using this app, you acknowledge that the creators are not responsible for any loss or damage arising from reliance on this information.
+
+### 📜 License
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+Copyright (c) 2026 @CosmKiwi
