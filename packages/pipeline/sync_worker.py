@@ -3,6 +3,7 @@ import urllib.request
 import json
 import datetime
 from pathlib import Path
+import os
 import diskcache
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -59,7 +60,12 @@ def get_year_from_ts(ts):
     except (OverflowError, ValueError): return None
 
 def run_sync(config, logger):
-    DATA_DIR = Path(__file__).parent.parent.parent / "apps" / "web" / "public" / "data"
+    env_data_dir = os.environ.get("WELLIES_DATA_DIR")
+    if env_data_dir:
+        DATA_DIR = Path(env_data_dir)
+    else:
+        DATA_DIR = Path(__file__).parent.parent.parent / "apps" / "web" / "public" / "data"
+    
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"🛰️ Requesting data for {config['name']}...")
@@ -138,11 +144,6 @@ def run_sync(config, logger):
         with gzip.open(arrow_file, 'wb', compresslevel=9) as f:
             f.write(sink.getvalue().to_pybytes())
 
-        # compressed_bytes = brotli.compress(sink.getvalue().to_pybytes())
-        # arrow_file = output_path.with_suffix('.arrow.br')
-        # with open(arrow_file, "wb") as f:
-        #     f.write(compressed_bytes)
-        
         logger.info(f"✅ Saved Arrow (Core) to {arrow_file}")
 
     return len(arrow_rows)
