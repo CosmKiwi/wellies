@@ -52,11 +52,10 @@ const binsToPath = (bins: number[], maxVal: number, startIndex: number = 0, endI
     return `M 0 100 L ${points.join(' ')} L 100 100 Z`;
 };
 
-// 🎯 Point to the pre-compressed Arrow files
-const UTILITY_CONFIG: Record<string, { file: string, color: [number, number, number], label: string }> = {
-    drinking: { file: 'drinking_water_pipes.arrow', color: [0, 150, 255], label: 'Drinking' },
-    waste: { file: 'waste_water_pipes.arrow', color: [168, 85, 247], label: 'Waste' },
-    storm: { file: 'storm_water_pipes.arrow', color: [34, 197, 94], label: 'Storm' }
+const UTILITY_CONFIG: Record<string, { manifestKey: string, color: [number, number, number], label: string }> = {
+    drinking: { manifestKey: 'drinking_water_pipe_in_use', color: [0, 150, 255], label: 'Drinking' },
+    waste: { manifestKey: 'waste_water_pipe_in_use', color: [168, 85, 247], label: 'Waste' },
+    storm: { manifestKey: 'storm_water_pipe_in_use', color: [34, 197, 94], label: 'Storm' }
 };
 
 const populateColor = (target: number[], source: [number, number, number, number?]): [number, number, number, number] => {
@@ -134,60 +133,99 @@ async function init() {
     let globalBins: number[] = [];
     let globalMax = 0;
     const dataCache: Record<string, any> = {};
+    let manifestCache: Record<string, any> = {}; // 🚀 Store the manifest globally
 
     // ⚡ THE ZERO-COPY PIPELINE
-    const fetchArrowData = async (key: string, file: string, isPoint = false) => {
+    const fetchArrowData = async (key: string, manifestKey: string, isPoint = false) => {
         if (dataCache[key] && dataCache[key].length > 0) return;
 
         try {
-            const IS_DEV = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-            const DATA_HOST = IS_DEV ? '/data' : 'https://data.wellies.app';
+            const DATA_HOST = 'https://data.wellies.app';
 
-            const res = await fetch(`${DATA_HOST}/${file}.gz`);
+            const fileInfo = manifestCache[manifestKey];
+            if (!fileInfo || !fileInfo.latest_file) {
+                throw new Error(`No manifest entry found for: ${manifestKey}`);
+            }
+
+            const fileName = fileInfo.latest_file;
+
+            const res = await fetch(`${DATA_HOST}/${fileName}`);
             if (!res.ok) throw new Error(`HTTP Error ${res.status}: ${res.statusText}`);
 
+            // 🚀 RESTORED: The bulletproof manual decompression
             const ds = new DecompressionStream('gzip');
             const decompressedStream = res.body!.pipeThrough(ds);
             const buffer = await new Response(decompressedStream).arrayBuffer();
+
             const table = tableFromIPC(buffer);
 
             const numRows = table.numRows;
-            const coordsCol = table.getChild('coords') as any;
-            const installYearCol = table.getChild('install_year') as any;
-            const lengthMCol = table.getChild('length_m') as any;
 
-            const coordsData = coordsCol?.data[0];
-            const flatCoordsArray = coordsData?.children[0]?.values; // The [x,y,x,y...] array
-            const pathOffsetsArray = coordsData?.valueOffsets;       // The [0, 4, 8...] float offsets
+            // 🚀 SMART LOOKUP: Find 'coords' OR 'SHAPE' OR 'geometry'
+            const coordsCol = table.getChild('coords') ||
+                table.getChild('SHAPE') ||
+                table.getChild('geometry');
 
-            // 🛠️ THE SPIDERWEB FIX: Convert float offsets to vertex offsets
-            let vertexOffsets;
-            if (pathOffsetsArray) {
-                vertexOffsets = new Uint32Array(pathOffsetsArray.length);
-                for (let i = 0; i < pathOffsetsArray.length; i++) {
-                    vertexOffsets[i] = pathOffsetsArray[i] / 2;
-                }
+            if (!coordsCol) {
+                const availableCols = table.schema.fields.map(f => f.name).join(', ');
+                throw new Error(`Geometry column not found. Available: ${availableCols}`);
             }
+            // 🚀 THE DEEP DIVE: Find the flat array and offsets regardless of nesting
+            let flatCoordsArray: any = null;
+            let pathOffsetsArray: any = null;
+
+            // Pattern A: Standard ListArray
+            const leaf = coordsCol.data[0];
+            if (leaf?.values) {
+                flatCoordsArray = leaf.values;
+                pathOffsetsArray = leaf.valueOffsets;
+            }
+            // Pattern B: Nested Struct or Validity Bitmap wrapper
+            else if (leaf?.children?.[0]) {
+                flatCoordsArray = leaf.children[0].values;
+                pathOffsetsArray = leaf.valueOffsets;
+            }
+
+            // If we still can't find it, log the structure so we can diagnose
+            if (!flatCoordsArray || !pathOffsetsArray) {
+                console.dir(coordsCol); // Inspect this in Chrome DevTools!
+                throw new Error("Arrow file is missing valid coordinate/offset data");
+            }
+
+            // 🛠️ THE VERTEX FIX
+            // Convert 'value' offsets (count of floats) to 'vertex' offsets (count of x,y pairs)
+            const vertexOffsets = new Uint32Array(pathOffsetsArray.length);
+            for (let i = 0; i < pathOffsetsArray.length; i++) {
+                vertexOffsets[i] = pathOffsetsArray[i] / 2;
+            }
+
+            const yearCol = table.getChild('install_year') || table.getChild('year');
+            const rawYearValues = yearCol?.data[0]?.values;
 
             const binaryData: any = {
                 length: numRows,
                 attributes: {},
                 table: table,
-                years: installYearCol?.data[0]?.values || new Int32Array(numRows),
-                lengths: lengthMCol?.data[0]?.values || new Float32Array(numRows)
+                // 🚀 FORCE CONVERSION TO INT32
+                // If rawYearValues is a BigInt64Array, this converts it to a standard Int32Array
+                years: rawYearValues ? Int32Array.from(rawYearValues as any) : new Int32Array(numRows),
+                lengths: table.getChild('length_m')?.data[0]?.values || new Float32Array(numRows)
             };
 
             if (isPoint) {
                 binaryData.attributes.getPosition = { value: flatCoordsArray, size: 2 };
             } else {
-                binaryData.startIndices = vertexOffsets;
+                // We use subarray(0, numRows) to ensure Deck.gl doesn't read the final offset 
+                // which is used by Arrow to indicate the end of the last list item
+                binaryData.startIndices = vertexOffsets.subarray(0, numRows);
                 binaryData.attributes.getPath = { value: flatCoordsArray, size: 2 };
             }
 
             dataCache[key] = binaryData;
+            (window as any).dataCache = dataCache;
 
         } catch (err) {
-            console.error(`⚠️ Non-fatal error loading ${key} (${file}.gz):`, err);
+            console.error(`⚠️ Non-fatal error loading ${key} (Manifest: ${manifestKey}):`, err);
             u("#audit-stat").html(`<span class="text-red-400 font-bold">⚠️ Data unavailable for ${key}...</span>`);
 
             // Graceful Degradation: Insert an empty mock dataset so Deck.gl doesn't crash
@@ -325,14 +363,14 @@ async function init() {
             }));
         });
 
-        if (dataCache['active_leaks']) {
+        if (dataCache['job_status']) {
             layers.push(new ScatterplotLayer({
-                id: "active-leaks",
-                data: dataCache['active_leaks'],
+                id: "job_status",
+                data: dataCache['job_status'],
                 visible: showLeaks && activeUtilities.has('drinking'),
 
                 getFillColor: (_: any, { index, target }: any) => {
-                    const row = dataCache['active_leaks'].table.get(index);
+                    const row = dataCache['job_status'].table.get(index);
                     if (!row) return populateColor(target as number[], COLORS.GRAY);
                     const p = (row.priority || '').toLowerCase();
                     const t = target as number[];
@@ -384,7 +422,7 @@ async function init() {
                 const row = binaryData.table.get(index);
                 if (!row) return null;
 
-                const isLeak = layer.id === 'active-leaks';
+                const isLeak = layer.id === 'job_status';
                 return {
                     html: isLeak
                         ? `<div class="p-2 font-mono text-xs"><b class="text-red-400">ACTIVE LEAK</b><hr class="my-1 opacity-20"/>${row.status || ''} | Priority: ${row.priority || 'N/A'}</div>`
@@ -413,9 +451,10 @@ async function init() {
             u(`#tab-${id}`).addClass("bg-blue-600 text-white shadow-md").removeClass("text-slate-400");
             lastUtilityId = "";
 
-            refresh(); // Triggers loading state in the UI instantly
-            await fetchArrowData(id, UTILITY_CONFIG[id].file, false);
-            refresh(); // Renders the map once data arrives
+            refresh();
+            // 🚀 Pass the manifestKey instead of the hardcoded file
+            await fetchArrowData(id, UTILITY_CONFIG[id].manifestKey, false);
+            refresh();
         });
 
         u("#btn-mat-all").on("click", () => {
@@ -515,17 +554,31 @@ async function init() {
 
         new ResizeObserver(() => map.resize()).observe(document.getElementById('map')!);
 
-        // 3. INITIAL DRAW (renders map instantly)
+        // 3. INITIAL DRAW
         refresh();
 
-        // 4. FETCH DATA IN BACKGROUND
-        Promise.all([
-            fetchArrowData('drinking', UTILITY_CONFIG.drinking.file, false),
-            fetchArrowData('active_leaks', 'active_leaks.arrow', true)
-        ]).then(() => {
-            // Re-render map and stats once data arrives
-            refresh();
-        });
+        // 4. FETCH MANIFEST AND DATA IN BACKGROUND
+        const DATA_HOST = 'https://data.wellies.app';
+
+        fetch(`${DATA_HOST}/manifest.json`)
+            .then(res => res.json())
+            .then(manifest => {
+                manifestCache = manifest;
+                console.log("📝 Loaded manifest:", manifestCache);
+
+                // Fetch the initial datasets using the new manifest keys
+                return Promise.all([
+                    fetchArrowData('drinking', UTILITY_CONFIG.drinking.manifestKey, false),
+                    // Assuming you have an 'job_status' extraction synced to R2 eventually!
+                    fetchArrowData('job_status', 'job_status', true)
+                ]);
+            })
+            .then(() => {
+                refresh();
+            })
+            .catch(err => {
+                console.error("💥 FATAL ERROR loading pipeline:", err);
+            });
 
     } catch (err) {
         console.error("💥 INIT FATAL ERROR:", err);
