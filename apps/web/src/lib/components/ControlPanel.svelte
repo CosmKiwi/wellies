@@ -97,6 +97,7 @@
 >
 	<button
 		onclick={() => (isPanelOpen = !isPanelOpen)}
+		aria-label="Toggle Panel"
 		class="mx-auto mb-4 h-1.5 w-12 cursor-pointer rounded-full bg-slate-700 active:bg-slate-500 sm:hidden"
 	></button>
 
@@ -111,7 +112,11 @@
 				Wellies
 			</h1>
 		</div>
-		<button onclick={() => (isPanelOpen = !isPanelOpen)} class="p-1 text-slate-400 sm:hidden">
+		<button
+			onclick={() => (isPanelOpen = !isPanelOpen)}
+			aria-label="Toggle Panel"
+			class="p-1 text-slate-400 sm:hidden"
+		>
 			<svg
 				xmlns="http://www.w3.org/2000/svg"
 				width="24"
@@ -182,7 +187,14 @@
 			</div>
 
 			<div class="px-2 pt-1">
-				<Slider bind:value={yearRange} min={1870} max={2026} step={1} class="w-full" />
+				<Slider
+					type="multiple"
+					bind:value={yearRange}
+					min={1870}
+					max={2026}
+					step={1}
+					class="w-full"
+				/>
 			</div>
 		</div>
 

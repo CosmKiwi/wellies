@@ -302,9 +302,8 @@
 	</div>
 	<button
 		onclick={zoomToLocation}
-		class="absolute right-6 bottom-12 z-20 cursor-pointer rounded-full border border-slate-800 bg-slate-900/80 p-4 text-blue-400 shadow-2xl backdrop-blur-xl transition-all hover:text-white active:scale-95 sm:bottom-12 {isLocating
-			? 'animate-pulse text-blue-500'
-			: ''}"
+		aria-label="Zoom to current location"
+		class="cursor-pointer... absolute right-6 bottom-12 z-20"
 	>
 		<svg
 			xmlns="http://www.w3.org/2000/svg"

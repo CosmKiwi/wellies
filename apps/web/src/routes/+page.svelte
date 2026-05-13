@@ -13,7 +13,7 @@
 
 	let utilityData = $state<any>(null);
 	let jobStatusData = $state<any>(null);
-	let manifestData = $state<any>(null);
+	let manifestData = $state<Record<string, any> | null>(null);
 	let isLoading = $state(false);
 
 	// Fetch Manifest
@@ -26,7 +26,11 @@
 	// Fetch Pipes
 	$effect(() => {
 		isLoading = true;
-		const manifestKey = `${activeUtility}_water_pipe_in_use`;
+		// const manifestKey = `${activeUtility}_water_pipe_in_use`;
+
+		// Switch to this to test the local Parquet file!
+		const manifestKey = 'test_parquet';
+
 		fetchUtilityData(manifestKey).then((data) => {
 			utilityData = data;
 			isLoading = false;
@@ -72,8 +76,13 @@
 	{#if showDisclaimer}
 		<div
 			class="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/90 p-4 backdrop-blur-md"
+			role="button"
+			tabindex="0"
 			onclick={(e) => {
 				if (e.target === e.currentTarget) showDisclaimer = false;
+			}}
+			onkeydown={(e) => {
+				if (e.key === 'Enter' || e.key === 'Escape') showDisclaimer = false;
 			}}
 		>
 			<div

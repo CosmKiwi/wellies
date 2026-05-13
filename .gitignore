@@ -61,3 +61,5 @@ wellies-proxy/.dev.vars
 # TypeScript generated files (if applicable)
 *.tsbuildinfo
 wellies-proxy/test/env.d.ts
+
+*.parquet
