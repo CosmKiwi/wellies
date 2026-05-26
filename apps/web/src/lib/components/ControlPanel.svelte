@@ -33,33 +33,34 @@
 	};
 
 	let stats = $derived.by(() => {
-		if (!utilityData) return { count: 0, km: '0.0', pathData: '', startPct: 0, endPct: 100 };
-
-		const numRows = utilityData.length;
-		const years = utilityData.years;
-		const lengths = utilityData.lengths;
-		const materialCol = utilityData.table.getChild('material');
+		// 🚀 Now we check for the pre-computed histogram!
+		if (!utilityData || !utilityData.histogram)
+			return { count: 0, km: '0.0', pathData: '', startPct: 0, endPct: 100 };
 
 		let totalMeters = 0;
 		let visibleCount = 0;
 		let bins = new Array(2026 - 1870 + 1).fill(0);
 
-		for (let i = 0; i < numRows; i++) {
-			const matCat = getMaterialCategory(materialCol?.get(i));
+		// 🚀 Instead of 100,000 rows, this loop only runs ~300 times
+		for (const row of utilityData.histogram) {
+			const matCat = getMaterialCategory(row.material);
 			if (!activeMaterials.has(matCat)) continue;
 
-			const yr = years[i] || 0;
+			// Coerce to numbers (DuckDB COUNT returns BigInt which breaks math)
+			const yr = Number(row.year) || 0;
+			const len = Number(row.length) || 0;
+			const count = Number(row.count) || 0;
 
 			// Build Bins for SVG
 			if (yr >= 1870 && yr <= 2026) {
-				bins[yr - 1870] += lengths[i] || 0;
+				bins[yr - 1870] += len;
 			}
 
 			// Calculate active stats based on slider
 			const yrForSlider = yr === 0 ? yearRange[1] : yr;
 			if (yrForSlider >= yearRange[0] && yrForSlider <= yearRange[1] && (showUnknown || yr > 0)) {
-				totalMeters += lengths[i] || 0;
-				visibleCount++;
+				totalMeters += len;
+				visibleCount += count;
 			}
 		}
 

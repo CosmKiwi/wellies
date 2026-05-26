@@ -6,15 +6,15 @@
 	import 'maplibre-gl/dist/maplibre-gl.css';
 
 	let {
-		activeUtility,
-		yearRange,
-		showUnknown,
-		showLeaks,
-		colorMode,
-		activeMaterials,
-		utilityData,
-		isLoading,
-		jobStatusData
+		activeUtility = $bindable(),
+		yearRange = $bindable(),
+		showUnknown = $bindable(),
+		showLeaks = $bindable(),
+		colorMode = $bindable(),
+		activeMaterials = $bindable(),
+		utilityData = $bindable(),
+		isLoading = $bindable(),
+		jobStatusData = $bindable()
 	} = $props();
 
 	let canvas: HTMLCanvasElement;
@@ -52,9 +52,16 @@
 		return 'OTHER';
 	};
 
-	const getAssetColor = (row: any, mode: string, utility: string, target: number[]) => {
+	// 🚀 Updated to accept raw values instead of an Arrow row object
+	const getAssetColor = (
+		material: string,
+		installYear: number,
+		mode: string,
+		utility: string,
+		target: number[]
+	) => {
 		if (mode === 'material') {
-			const cat = getMaterialCategory(row.material);
+			const cat = getMaterialCategory(material);
 			if (cat === 'AC') return COLORS.RED;
 			if (cat === 'CI') return COLORS.PURPLE;
 			if (cat === 'STEEL') return COLORS.YELLOW;
@@ -62,7 +69,7 @@
 			return COLORS.GRAY;
 		}
 		if (mode === 'age') {
-			const yr = Number(row.install_year) || 0;
+			const yr = Number(installYear) || 0;
 			if (yr === 0) return COLORS.UNKNOWN;
 			const age = 2026 - yr;
 			if (age > 70) return COLORS.DARK_RED;
@@ -70,10 +77,9 @@
 			if (age > 30) return COLORS.YELLOW;
 			return COLORS.GREEN;
 		}
-		// Default color based on utility
 		if (utility === 'waste') return [168, 85, 247, 200];
 		if (utility === 'storm') return [34, 197, 94, 200];
-		return [0, 150, 255, 200]; // drinking
+		return [0, 150, 255, 200];
 	};
 
 	let isLocating = $state(false);
@@ -81,7 +87,6 @@
 	function zoomToLocation() {
 		if (!navigator.geolocation) return alert('Geolocation not supported');
 		isLocating = true;
-
 		navigator.geolocation.getCurrentPosition(
 			(pos) => {
 				isLocating = false;
@@ -105,7 +110,76 @@
 		);
 	}
 
-	// 2. Initialize MapLibre & Deck.gl (Runs once)
+	// 🚀 1. The Predictive Threshold Overscanner
+	let debounceTimer: number;
+	let currentBufferBBox: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
+
+	function triggerSpatialPruning() {
+		if (!map) return;
+
+		clearTimeout(debounceTimer);
+		debounceTimer = window.setTimeout(async () => {
+			const bounds = map.getBounds();
+			if (!bounds) return;
+
+			const currentView = {
+				minX: bounds.getWest(),
+				maxX: bounds.getEast(),
+				minY: bounds.getSouth(),
+				maxY: bounds.getNorth()
+			};
+
+			const viewWidth = currentView.maxX - currentView.minX;
+			const viewHeight = currentView.maxY - currentView.minY;
+
+			let needsLoad = false;
+
+			if (!currentBufferBBox) {
+				needsLoad = true;
+			} else {
+				// 🚀 Threshold Check: If within 20% of buffer edge, trigger load!
+				const marginX = viewWidth * 0.2;
+				const marginY = viewHeight * 0.2;
+
+				if (
+					currentView.minX - marginX < currentBufferBBox.minX ||
+					currentView.maxX + marginX > currentBufferBBox.maxX ||
+					currentView.minY - marginY < currentBufferBBox.minY ||
+					currentView.maxY + marginY > currentBufferBBox.maxY
+				) {
+					needsLoad = true;
+				}
+			}
+
+			if (!needsLoad) return; // Completely silent if panning inside buffer
+
+			// Calculate 3x Overscan
+			const fetchWidth = Math.max(viewWidth, 0.005);
+			const fetchHeight = Math.max(viewHeight, 0.005);
+
+			currentBufferBBox = {
+				minX: currentView.minX - fetchWidth,
+				maxX: currentView.maxX + fetchWidth,
+				minY: currentView.minY - fetchHeight,
+				maxY: currentView.maxY + fetchHeight
+			};
+
+			// 🚀 Calculate the LOD (Level of Detail)
+			const zoom = map.getZoom();
+			let lodLevel = 'polygon';
+			if (zoom >= 15)
+				lodLevel = 'all'; // Street level
+			else if (zoom >= 12) lodLevel = 'mains'; // City level
+
+			window.dispatchEvent(
+				new CustomEvent('wellies:bbox-change', {
+					detail: { bbox: currentBufferBBox, lod: lodLevel }
+				})
+			);
+		}, 150);
+	}
+
+	// 2. Initialize MapLibre & Deck.gl
 	$effect(() => {
 		if (!canvas || !mapContainer || deck) return;
 
@@ -123,25 +197,40 @@
 			initialViewState,
 			controller: true,
 
+			// 🚀 Updated Tooltip to read from primitive arrays
 			getTooltip: ({ index, layer }: any) => {
-				if (index < 0 || !layer || !utilityData) return null;
-				const row = utilityData.table.get(index);
-				if (!row) return null;
+				if (index < 0 || !layer) return null;
 
 				const isLeak = layer.id === 'job_status';
+				const data = isLeak ? jobStatusData : utilityData;
+				if (!data) return null;
 
-				return {
-					html: isLeak
-						? `<div class="p-2 font-mono text-xs"><b class="text-red-400">ACTIVE LEAK</b><hr class="my-1 opacity-20"/>${row.status || ''} | Priority: ${row.priority || 'N/A'}</div>`
-						: `<div class="p-2 font-mono text-xs"><b class="text-blue-400">${row.asset_id || 'Pipe'}</b><hr class="my-1 opacity-20"/>${row.material || 'Unknown'} | ${row.diameter_mm || '? '}mm</div>`,
-					style: {
-						backgroundColor: 'rgba(15, 23, 42, 0.95)',
-						color: '#fff',
-						borderRadius: '8px',
-						border: '1px solid rgba(255,255,255,0.1)',
-						backdropFilter: 'blur(4px)'
-					}
-				};
+				if (isLeak) {
+					const status = data.statuses?.[index] || 'Unknown';
+					const priority = data.priorities?.[index] || 'N/A';
+					return {
+						html: `<div class="p-2 font-mono text-xs"><b class="text-red-400">ACTIVE LEAK</b><hr class="my-1 opacity-20"/>${status} | Priority: ${priority}</div>`,
+						style: {
+							backgroundColor: 'rgba(15, 23, 42, 0.95)',
+							color: '#fff',
+							borderRadius: '8px',
+							border: '1px solid rgba(255,255,255,0.1)'
+						}
+					};
+				} else {
+					const id = data.ids?.[index] || 'Pipe';
+					const mat = data.materials?.[index] || 'Unknown';
+					const dia = data.diameters?.[index] || '?';
+					return {
+						html: `<div class="p-2 font-mono text-xs"><b class="text-blue-400">${id}</b><hr class="my-1 opacity-20"/>${mat} | ${dia}mm</div>`,
+						style: {
+							backgroundColor: 'rgba(15, 23, 42, 0.95)',
+							color: '#fff',
+							borderRadius: '8px',
+							border: '1px solid rgba(255,255,255,0.1)'
+						}
+					};
+				}
 			},
 
 			onViewStateChange: ({ viewState }) => {
@@ -151,21 +240,25 @@
 					bearing: viewState.bearing,
 					pitch: viewState.pitch
 				});
+				triggerSpatialPruning();
 			},
 			layers: []
 		});
+
+		map.on('load', () => triggerSpatialPruning());
 
 		const resizeObserver = new ResizeObserver(() => map.resize());
 		resizeObserver.observe(mapContainer);
 
 		return () => {
+			clearTimeout(debounceTimer);
 			resizeObserver.disconnect();
 			deck.finalize();
 			map.remove();
 		};
 	});
 
-	// 🚀 3. Update Deck.gl layers reactively based on UI state
+	// 3. Update Deck.gl layers reactively
 	$effect(() => {
 		if (!deck) return;
 
@@ -173,7 +266,7 @@
 		const activeLayers = [];
 
 		// --- LAYER 1: PIPES ---
-		if (utilityData) {
+		if (utilityData && utilityData.length > 0) {
 			activeLayers.push(
 				new PathLayer({
 					id: `pipes-${activeUtility}`,
@@ -181,9 +274,11 @@
 					widthMinPixels: 2,
 					pickable: true,
 					autoHighlight: true,
+					// 🚀 Read directly from the arrays passed from the Worker
 					getColor: (_: any, { index, target }: any) => {
-						const row = utilityData.table.get(index);
-						const color = getAssetColor(row, colorMode, activeUtility, target as number[]);
+						const rawMat = utilityData.materials?.[index] || '';
+						const yr = utilityData.years?.[index] || 0;
+						const color = getAssetColor(rawMat, yr, colorMode, activeUtility, target as number[]);
 						target[0] = color[0];
 						target[1] = color[1];
 						target[2] = color[2];
@@ -191,8 +286,8 @@
 						return target;
 					},
 					getFilterValue: (_: any, { index, target }: any) => {
-						const yr = utilityData.years[index];
-						const rawMat = utilityData.table.getChild('material')?.get(index);
+						const yr = utilityData.years?.[index] || 0;
+						const rawMat = utilityData.materials?.[index] || '';
 						const matCat = getMaterialCategory(rawMat);
 
 						target[0] = yr === 0 ? maxFilter : yr;
@@ -205,8 +300,8 @@
 						[1, 1]
 					],
 					updateTriggers: {
-						getColor: [colorMode],
-						getFilterValue: [showUnknown, Array.from(activeMaterials).join(',')],
+						getColor: [colorMode, utilityData],
+						getFilterValue: [showUnknown, Array.from(activeMaterials).join(','), utilityData],
 						filterRange: [yearRange[0], yearRange[1]]
 					}
 				})
@@ -214,8 +309,7 @@
 		}
 
 		// --- LAYER 2: JOB STATUS (LEAKS) ---
-		if (jobStatusData && showLeaks) {
-			// Map our UI tabs to the exact dataset strings
+		if (jobStatusData && jobStatusData.length > 0 && showLeaks) {
 			const typeMapping: Record<string, string> = {
 				drinking: 'Potable Water',
 				waste: 'Waste Water',
@@ -224,7 +318,7 @@
 
 			activeLayers.push(
 				new ScatterplotLayer({
-					id: 'job_status', // Has to match the ID we check in getTooltip!
+					id: 'job_status',
 					data: jobStatusData,
 					radiusUnits: 'meters',
 					getRadius: 25,
@@ -234,12 +328,9 @@
 					lineWidthMinPixels: 1,
 					pickable: true,
 					autoHighlight: true,
-
-					// Color by priority
+					// 🚀 Read directly from priority array
 					getFillColor: (_: any, { index, target }: any) => {
-						const row = jobStatusData.table.get(index);
-						if (!row) return COLORS.GRAY;
-						const p = (row.priority || '').toLowerCase();
+						const p = (jobStatusData.priorities?.[index] || '').toLowerCase();
 						if (p === 'urgent') {
 							target[0] = 220;
 							target[1] = 38;
@@ -263,20 +354,18 @@
 						}
 						return target;
 					},
-
-					// Filter by Water Type
 					extensions: [new DataFilterExtension({ filterSize: 1 })],
+					// 🚀 Read directly from water types array
 					getFilterValue: (_: any, { index }: any) => {
-						const row = jobStatusData.table.get(index);
+						const wType = jobStatusData.watertypes?.[index];
 						const expectedType = typeMapping[activeUtility];
-						// Show if it matches the current tab, OR if the data isn't stated
-						const isMatch = row?.watertype === expectedType || row?.watertype === 'Not stated';
+						const isMatch = wType === expectedType || wType === 'Not stated';
 						return isMatch ? 1 : 0;
 					},
-					filterRange: [1, 1], // Only show points that return a 1
-
+					filterRange: [1, 1],
 					updateTriggers: {
-						getFilterValue: [activeUtility]
+						getFilterValue: [activeUtility, jobStatusData],
+						getFillColor: [jobStatusData]
 					}
 				})
 			);
@@ -288,22 +377,21 @@
 
 <div class="relative h-full w-full overflow-hidden bg-slate-900">
 	<div bind:this={mapContainer} class="absolute inset-0 h-full w-full"></div>
-
 	<canvas bind:this={canvas} class="absolute inset-0 h-full w-full focus:outline-none"></canvas>
 
 	<div
 		class="absolute top-4 right-4 z-20 rounded-md border border-slate-800 bg-slate-950/80 px-3 py-1.5 text-[10px] font-bold tracking-widest text-slate-200 uppercase backdrop-blur-sm"
 	>
 		{#if isLoading}
-			<span class="animate-pulse text-orange-400">Loading Pipes...</span>
+			<span class="animate-pulse text-orange-400">Loading Cache...</span>
 		{:else}
-			<span class="text-emerald-400">Pipes Loaded</span>
+			<span class="text-emerald-400">Lakehouse Active</span>
 		{/if}
 	</div>
 	<button
 		onclick={zoomToLocation}
 		aria-label="Zoom to current location"
-		class="cursor-pointer... absolute right-6 bottom-12 z-20"
+		class="absolute right-6 bottom-12 z-20 cursor-pointer text-slate-400 transition-colors hover:text-white"
 	>
 		<svg
 			xmlns="http://www.w3.org/2000/svg"

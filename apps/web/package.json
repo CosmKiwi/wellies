@@ -49,7 +49,7 @@
 		"@deck.gl/core": "^9.3.1",
 		"@deck.gl/extensions": "^9.3.1",
 		"@deck.gl/layers": "^9.3.1",
-		"@duckdb/duckdb-wasm": "^1.33.1-dev45.0",
+		"@duckdb/duckdb-wasm": "1.28.0",
 		"apache-arrow": "^21.1.0",
 		"maplibre-gl": "^5.23.0"
 	}

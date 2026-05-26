@@ -63,3 +63,5 @@ wellies-proxy/.dev.vars
 wellies-proxy/test/env.d.ts
 
 *.parquet
+
+.svelte-kit/

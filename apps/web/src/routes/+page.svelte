@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Map from '$lib/components/Map.svelte';
 	import ControlPanel from '$lib/components/ControlPanel.svelte';
-	import { fetchUtilityData, getManifest } from '$lib/data-pipeline';
+	import { queryLakehouse, getManifest } from '$lib/data-pipeline';
 
 	let activeUtility = $state('drinking');
 	let yearRange = $state([1870, 2026]);
@@ -13,35 +13,113 @@
 
 	let utilityData = $state<any>(null);
 	let jobStatusData = $state<any>(null);
-	let manifestData = $state<Record<string, any> | null>(null);
+	let manifestData = $state<any>(null);
 	let isLoading = $state(false);
 
-	// Fetch Manifest
+	let currentBBox = $state<any>(null);
+	let currentLod = $state<string>('all'); // 🚀 Track LOD for future optimizations
+
+	// 🚀 1. Updated BBox catcher to handle the new detail object
 	$effect(() => {
-		getManifest().then((data) => {
+		const handleBBox = (e: Event) => {
+			const detail = (e as CustomEvent).detail;
+			currentBBox = detail.bbox;
+			currentLod = detail.lod;
+		};
+		window.addEventListener('wellies:bbox-change', handleBBox);
+		return () => window.removeEventListener('wellies:bbox-change', handleBBox);
+	});
+
+	$effect(() => {
+		getManifest().then((data: any) => {
 			manifestData = data;
 		});
 	});
 
-	// Fetch Pipes
+	// 🚀 2. Combined the queries so they fire simultaneously to the Web Worker
 	$effect(() => {
+		if (!currentBBox) return;
+
 		isLoading = true;
-		// const manifestKey = `${activeUtility}_water_pipe_in_use`;
 
-		// Switch to this to test the local Parquet file!
-		const manifestKey = 'test_parquet';
+		// Pipes
+		queryLakehouse({
+			network: 'wellington',
+			asset: 'pipes',
+			type: activeUtility,
+			bbox: currentBBox
+		})
+			.then((data) => {
+				utilityData = data;
+				isLoading = false; // Turn off spinner when the heavy geometry finishes
+			})
+			.catch((err) => {
+				console.error('Pipe Query Failed:', err);
+				isLoading = false;
+			});
 
-		fetchUtilityData(manifestKey).then((data) => {
-			utilityData = data;
-			isLoading = false;
-		});
+		// Jobs (Fires at the exact same time without blocking the UI or the Pipe query)
+		queryLakehouse({
+			network: 'wellington',
+			asset: 'jobs',
+			type: activeUtility,
+			bbox: currentBBox
+		})
+			.then((data) => {
+				jobStatusData = data;
+			})
+			.catch((err) => {
+				console.error('Job Query Failed:', err);
+			});
 	});
 
-	// Fetch Jobs
+	// 🚀 The Manifest Watchdog
 	$effect(() => {
-		fetchUtilityData('job_status', true).then((data) => {
-			jobStatusData = data;
+		// 1. Initial Load
+		getManifest().then((data: any) => {
+			manifestData = data;
 		});
+
+		// 2. Start the background polling (e.g., every 5 minutes / 300,000ms)
+		const watchdogTimer = setInterval(async () => {
+			if (!manifestData || !currentBBox) return;
+
+			try {
+				const freshManifest = await getManifest(true);
+
+				// Compare hashes for the jobs file (since jobs change frequently)
+				const oldJobs = manifestData.files.find(
+					(f: any) => f.network === 'wellington' && f.asset.includes('jobs')
+				);
+				const newJobs = freshManifest.files.find(
+					(f: any) => f.network === 'wellington' && f.asset.includes('jobs')
+				);
+
+				if (oldJobs && newJobs && oldJobs.hash !== newJobs.hash) {
+					console.log(
+						`🚨 Data Change Detected: Jobs hash updated to ${newJobs.hash}. Refreshing map silently!`
+					);
+
+					// Trigger a silent re-query for the jobs layer!
+					queryLakehouse({
+						network: 'wellington',
+						asset: 'jobs',
+						type: activeUtility,
+						bbox: currentBBox
+					}).then((data) => {
+						jobStatusData = data; // DeckGL will reactively redraw the points!
+					});
+				}
+
+				// Update the UI "Last Synced" timestamp
+				manifestData = freshManifest;
+			} catch (err) {
+				console.warn('Watchdog failed to reach cloudflare:', err);
+			}
+		}, 300000); // 5 minutes
+
+		// Cleanup timer if the component ever unmounts
+		return () => clearInterval(watchdogTimer);
 	});
 </script>
 
@@ -148,28 +226,22 @@
 						</div>
 						<div class="space-y-4 border-t border-slate-800 pt-4">
 							<h3 class="text-xs font-bold tracking-widest text-slate-500 uppercase">
-								Source Freshness
+								Lakehouse Sync Status
 							</h3>
 							<div class="grid grid-cols-2 gap-x-4 gap-y-2 text-[11px] text-slate-400">
 								{#if manifestData}
-									{#each Object.entries(manifestData) as [key, fileInfo]: any}
-										{#if fileInfo?.latest_file}
-											<div class="truncate capitalize">
-												<span class="text-slate-300">{key.replace(/_/g, ' ')}:</span>
-											</div>
-											<div class="text-right font-mono text-blue-400">
-												{fileInfo.timestamp
-													? new Date(fileInfo.timestamp).toLocaleString(undefined, {
-															year: 'numeric',
-															month: 'short',
-															day: 'numeric',
-															hour: 'numeric',
-															minute: '2-digit'
-														})
-													: 'Synced'}
-											</div>
-										{/if}
-									{/each}
+									<div class="truncate capitalize">
+										<span class="text-slate-300">Last Synced:</span>
+									</div>
+									<div class="text-right font-mono text-blue-400">
+										{new Date(manifestData.manifest_updated).toLocaleString()}
+									</div>
+									<div class="truncate capitalize">
+										<span class="text-slate-300">Total Artifacts:</span>
+									</div>
+									<div class="text-right font-mono text-blue-400">
+										{manifestData.files.length} Parquet Files
+									</div>
 								{:else}
 									<div class="col-span-2 animate-pulse text-slate-500">Checking sync status...</div>
 								{/if}
